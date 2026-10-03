@@ -68,11 +68,23 @@ int main() {
             lowNoise.filterStrength,
         "Higher variance must produce stronger filtering.");
 
+    Vec3 mediumVariance(0.004f);
+
+    AdaptiveFilterDecision mediumRadius1 =
+        ComputeAdaptiveFilterDecision(
+            stable64,
+            color,
+            mediumVariance,
+            1.0f,
+            1,
+            DenoiseSignal::DiffuseIllumination,
+            settings);
+
     AdaptiveFilterDecision wideRadius =
         ComputeAdaptiveFilterDecision(
             stable64,
             color,
-            highVariance,
+            mediumVariance,
             1.0f,
             8,
             DenoiseSignal::DiffuseIllumination,
@@ -80,7 +92,7 @@ int main() {
 
     ok &= Check(
         wideRadius.filterStrength <
-            highNoise.filterStrength,
+            mediumRadius1.filterStrength,
         "Wide A-Trous radii must require stronger noise evidence.");
 
     AdaptiveFilterDecision weakGeometry =
