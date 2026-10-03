@@ -98,7 +98,7 @@ RENDER_HD inline ComposedSignals ComposePixel(
 {
     ComposedSignals out{};
     out.raw = pixel.raw;
-    out.finalColor = pixel.overflow;
+    out.finalColor = pixel.residual;
 
     for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
         const ResolvedLayer& layer = pixel.layers[slot];
