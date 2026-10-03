@@ -20,7 +20,8 @@ Phase E 的目标不是针对面积光打补丁，而是把采样、Primary Visi
 ~~~text
 SampleGenerator
 ├─ Pixel ID
-├─ Global Sample Index
+├─ Replicate ID
+├─ Sample Index Within Replicate
 └─ Dimension
         │
         ├──────── Camera Sample
@@ -36,7 +37,7 @@ SampleGenerator
                          │
                          ▼
                   SurfaceIdentity
-          instance / primitive / material
+ instance / primitive / material / surfaceGroup
                          │
                          ▼
              Primary Visibility Layers
@@ -48,7 +49,8 @@ SampleGenerator
                          │
                          ▼
                     Reconstruction
-           visibility + signal reconstruction
+        ├─ visibility / coverage reconstruction
+        └─ film reconstruction filter
                          │
               ┌──────────┴──────────┐
               ▼                     ▼
@@ -79,6 +81,9 @@ SampleGenerator
 5. Coverage / Visibility 是 Reconstruction 的正式输入，而不是 Compose 阶段的附加系数。
 6. Denoiser 强度必须由噪声统计决定，而不是所有像素固定执行同样的四轮过滤。
 7. 任何视觉优化都必须同时接受 Linear HDR 数值回归验证。
+8. Owen-Sobol 等低差异序列的噪声估计不得直接沿用 IID 样本的 variance / N 假设。
+9. Image Reconstruction 必须发生在 sample → film → pixel 阶段，禁止通过最终图像 blur 伪装抗锯齿。
+10. primitiveId 只表示精确几何元素，不直接决定 reconstruction continuity 或 denoiser continuity。
 
 # E1 — 统一 SampleGenerator
 
@@ -91,7 +96,8 @@ SampleGenerator
 ~~~cpp
 struct SampleGenerator {
     uint32_t pixelId;
-    uint32_t sampleIndex;
+    uint32_t replicateId;
+    uint32_t sampleIndexWithinReplicate;
     uint32_t scramble;
 
     RENDER_HD float Sample1D(uint32_t dimension) const;
@@ -99,7 +105,17 @@ struct SampleGenerator {
 };
 ~~~
 
-sampleIndex 必须是全局 sample index，而不是 pass 内 index。
+逻辑上的全局样本必须由 replicateId 与 sampleIndexWithinReplicate 唯一确定，不能使用 pass 内局部 index。
+
+固定 RQMC replicate 数量，建议第一版使用 4 个独立 scramble：
+
+~~~text
+16 SPP  = 4 replicates × 4 samples
+64 SPP  = 4 replicates × 16 samples
+256 SPP = 4 replicates × 64 samples
+~~~
+
+每个 replicate 内使用同一类低差异序列，不同 replicate 使用独立 scramble。后续噪声估计优先使用 replicate mean 之间的统计，而不是把 Sobol 序列内部样本当作 IID。
 
 ## Dimension Layout
 
@@ -128,7 +144,10 @@ Per-bounce block:
 - 移除 Integrator 对有状态 RNG 消耗顺序的依赖。
 - Camera、Light、BSDF、RR 均改为显式 dimension sampling。
 - CPU/CUDA 共用 SampleGenerator 算法。
-- Progressive accumulation 按 global sample index 顺序逐样本累积，不能因 pass 分组改变浮点累加顺序。
+- Progressive accumulation 按稳定的逻辑样本顺序逐样本累积，不能因 pass 分组改变浮点累加顺序。
+- 禁止先生成 pass-local sum 再归并，因为浮点加法不满足结合律。
+- samplesPerPass 只允许决定一次调度/进度更新包含多少逻辑样本，不允许改变样本集合、样本顺序或 reduce 树。
+- 为 RQMC 预留 replicate accumulator，保存每个 replicate 的 signal mean。
 
 ## 验收标准
 
@@ -143,6 +162,12 @@ Per-bounce block:
 ~~~
 
 Linear HDR 输出目标为 bitwise identical。若编译器浮点行为导致无法保证，则 max absolute error <= 1e-7，并记录原因。
+
+额外要求：
+
+- 不同 samplesPerPass 下每个 pixel / replicate / sample / dimension 返回完全相同的 sample。
+- 4 个 replicate 必须使用互相独立的 scramble。
+- 同一输入重复运行必须得到完全相同的 sample sequence。
 
 CI 增加 SampleSequenceDeterminism 检查。
 
@@ -174,7 +199,10 @@ enum class SamplerType {
 - 加入基于 pixel ID 的 Owen-style scramble。
 - Camera jitter 迁移到低差异序列。
 - Path dimensions 同样通过统一 SampleGenerator 读取。
+- 每个 RQMC replicate 使用独立 Owen-style scramble。
 - 保留 deterministic pseudo-random sampler 作为 A/B reference，不作为默认路径。
+- 不再用普通 IID 的 sampleVariance / N 解释 Sobol 序列内部噪声。
+- 每个 signal 保存 replicate mean，并用 replicate mean 之间的差异估计 uncertainty。
 
 ## 验收标准
 
@@ -202,6 +230,7 @@ struct SurfaceIdentity {
     uint32_t instanceId;
     uint32_t primitiveId;
     uint32_t materialId;
+    uint32_t surfaceGroupId;
 };
 ~~~
 
@@ -219,17 +248,30 @@ primitiveId
 
 materialId
   材质身份，用于材质连续性和跨 primitive filtering 判断。
+
+surfaceGroupId
+  Reconstruction continuity domain。
+  Box 的不同 Face 使用不同 group。
+  平滑 Mesh 中多个相邻 Triangle 可以属于同一个 group。
 ~~~
 
 ## Primary Classification
 
-一个像素内部 jitter samples 的 Primary Surface 分层使用精确身份：
+一个像素内部 jitter samples 仍保留精确 primitiveId 用于调试、picking 和 exact identity，但 Reconstruction layer key 不直接使用 triangle primitiveId。
+
+建议：
 
 ~~~text
+Primary exact identity:
 (instanceId, primitiveId)
+
+Reconstruction layer key:
+(instanceId, surfaceGroupId)
 ~~~
 
-禁止把 Box 的不同 face 合并成同一层。
+Box 的不同 face 必须分属不同 surfaceGroupId。
+
+未来 Mesh 中连续平滑、材质连续的一组 triangles 可以共享 surfaceGroupId，避免一个像素因为命中多个相邻 triangle 就耗尽固定 layer slot。
 
 ## Denoiser Neighborhood
 
@@ -252,7 +294,9 @@ roughness / metallic compatibility
 - HitRecord 返回完整 SurfaceIdentity。
 - Rect、Box Face 分配稳定 ID。
 - 为未来 Triangle / Mesh 预留 ID 规则。
-- Reconstruction layer key 使用精确 Primary Surface identity。
+- 增加 surfaceGroupId，并定义稳定分组规则。
+- Reconstruction layer key 使用 instanceId + surfaceGroupId。
+- primitiveId 保留 exact geometry identity，但不作为 reconstruction / denoiser continuity 的硬边界。
 - Denoiser guide 去除 primitive equality hard gate。
 
 ## 验收标准
@@ -261,12 +305,25 @@ roughness / metallic compatibility
 - 同一平面上相邻 primitive 可以合理过滤。
 - 几何硬折角无明显跨边 bleeding。
 - 数据结构可直接扩展到 Mesh Triangle，无需再次改接口。
+- 高模 Mesh 中多个相邻 triangle 不会因为 primitiveId 不同而被拆成大量 reconstruction layers。
 
-# E4 — Coverage / Visibility 正式进入 Reconstruction
+# E4 — Image Reconstruction：Coverage / Visibility + Film Filter
 
 ## 目标
 
-把 Primary Visibility 从简单的 sample count / SPP 升级为带统计语义的 Reconstruction 输入。
+把 Primary Visibility 从简单的 sample count / SPP 升级为带统计语义的 Reconstruction 输入，同时正式加入 Film Reconstruction Filter。
+
+E4 必须解决两个不同问题：
+
+~~~text
+Sampling variance
+  → 边缘 coverage 是否稳定
+
+Pixel reconstruction
+  → 连续图像信号如何重建为离散像素
+~~~
+
+低差异采样只能降低前者，不能单独消除高对比边缘的 staircase。
 
 建议数据：
 
@@ -282,6 +339,35 @@ struct VisibilityMoments {
 ~~~
 
 每一个 Primary Surface Layer 独立统计 visibility。
+
+RQMC 模式下 coverage uncertainty 应优先从独立 replicate 的 coverage mean 估计，而不是把同一 Sobol replicate 内的样本直接视为 IID。
+
+## Film Reconstruction Filter
+
+新增正式的 Film / Reconstruction Filter 层：
+
+~~~text
+continuous camera sample position
+        ↓
+PathSample / Visibility sample
+        ↓
+FilmSample
+        ↓
+Reconstruction Filter
+        ↓
+discrete pixel
+~~~
+
+第一版至少支持：
+
+~~~text
+Box   — reference / debug
+Tent  — default
+~~~
+
+Mitchell-Netravali 可以作为后续可选实现，不作为 E4 完成条件。
+
+Film Filter 必须参与 radiance、visibility 和 layer signal 的 sample-to-pixel reconstruction，禁止在 Final PNG 上直接 blur。
 
 ## 设计原则
 
@@ -311,6 +397,10 @@ count <= 1
 - 把 sample count / coverage confidence 传入 Denoiser。
 - Emission 与 Primary Visibility 的组合通过 Reconstruction 输出，不为灯单独添加 edge fix。
 - 明确 background / miss layer 的 visibility 语义。
+- 新增 FilmSample / ReconstructionFilter 抽象。
+- 实现 Box 与 Tent filter，默认使用 Tent。
+- Reconstruction Filter 必须作用于连续 sample position 到 pixel 的重建，而不是后处理模糊。
+- 记录每个 pixel 的有效 filter weight，避免边界归一化错误。
 
 ## 验收标准
 
@@ -318,6 +408,8 @@ count <= 1
 - 低 coverage 像素不能因为单样本 variance=0 被判定为高可信。
 - Box silhouette 不出现 coverage hole、halo 或不连续暗边。
 - Final 能量与 Raw 的高 SPP reference 保持一致趋势。
+- Tent filter 相比 Box filter 应减少高对比灯边的 staircase，同时不能产生明显 halo。
+- 相同 sample sequence 下切换 Box / Tent 时，差异必须来自 reconstruction kernel，而不是 sample sequence 改变。
 
 # E5 — Adaptive A-Trous
 
@@ -354,15 +446,21 @@ Specular：
 - 粗糙度越低，normal/depth 条件越严格。
 - 高光细节区不允许使用和 diffuse 相同的宽松半径。
 
-建议提供：
+建议提供连续强度决策，而不是把 maxIteration 作为主要算法边界：
 
 ~~~cpp
 struct AdaptiveFilterDecision {
-    int maxIteration;
-    float varianceScale;
+    float filterStrength;
     float geometryConfidence;
+    float noiseConfidence;
 };
 ~~~
+
+每一轮 A-Trous 都计算 filterStrength ∈ [0, 1]。
+
+低噪声区域的后续迭代应自然趋近于 0，而不是突然 STOP。maxIteration 可以保留为性能优化上限，但不能成为主要重建逻辑。
+
+噪声输入优先使用 RQMC replicate mean 之间估计出的 uncertainty；若使用 pseudo-random reference sampler，才允许使用对应的 IID variance estimator。
 
 ## 验收标准
 
@@ -403,15 +501,24 @@ PFM 要求：
 
 ## Regression Metrics
 
-新增 scripts/render_metrics.py，至少计算：
+新增 scripts/render_metrics.py，指标分为三类：
 
 ~~~text
-MSE
-RMSE
-PSNR
-max absolute error
-mean absolute error
+Correctness Regression
+- max absolute error
+- deterministic hash / exact comparison
+
+Linear HDR Quality
+- MSE
+- RMSE
+- MAE
+- NRMSE = RMSE / RMS(reference)
+
+Displayed Image
+- tone-mapped PSNR
 ~~~
+
+Linear HDR 不把 PSNR 作为主要指标，因为 HDR 没有稳定的固定 MAX_VALUE。Tone-mapped PSNR 只用于显示空间对比。
 
 支持 ROI：
 
@@ -447,7 +554,8 @@ tall-box silhouette ROI
 - PFM 稳定读写并保持 Linear HDR。
 - 相同输入 deterministic run 指标稳定。
 - 16 → 64 → 256 SPP 的 Raw error 整体下降。
-- Denoised Final 在低 SPP 下相对 Raw 有更低误差，同时不能通过明显过平滑换取单一指标优势。
+- Denoised Final 在低 SPP 下相对 Raw 有更低的 HDR NRMSE / RMSE，同时不能通过明显过平滑换取单一指标优势。
+- deterministic regression 与 render quality metric 分开报告，避免“数值完全一致”和“视觉质量更高”混成一个指标。
 
 # E7 — 16 / 64 / 256 SPP 最终验证
 
@@ -469,6 +577,20 @@ PNG preview
 PFM Linear HDR
 metrics.json
 ~~~
+
+调试模式额外输出 Debug AOV：
+
+~~~text
+Coverage
+Coverage Confidence
+RGB Variance / Noise Estimate
+Surface Group
+Normal
+Depth
+Adaptive Filter Strength
+~~~
+
+普通 push 不要求上传全部 Debug AOV；当 validation 失败或手动 workflow_dispatch 时上传完整 Debug AOV。
 
 建议目录：
 
@@ -539,6 +661,8 @@ PFM + PNG
     ↓
 Metrics
     ↓
+ROI Regression
+    ↓
 Artifact Upload
 ~~~
 
@@ -551,19 +675,27 @@ CUDA 保留 compile-only CI，暂不作为 Phase E 的运行时验收条件。
 严格按照：
 
 ~~~text
-E1 SampleGenerator
+E1 Deterministic SampleGenerator
+   + Dimension Registry
+   + RQMC Replicate Architecture
         ↓
 E2 Owen-Sobol / CMJ
+   + Independent Scramble per Replicate
         ↓
 E3 SurfaceIdentity
+   + surfaceGroupId
         ↓
-E4 Visibility Reconstruction
+E4 Image Reconstruction
+   + Visibility / Coverage Moments
+   + Film Filter
         ↓
 E5 Adaptive A-Trous
+   + Replicate-based Noise Estimate
+   + Continuous Filter Strength
         ↓
-E6 PFM + Metrics
+E6 PFM + Quantitative Regression
         ↓
-E7 Validation
+E7 Validation + Debug AOV
 ~~~
 
 不建议并行跳步：
@@ -579,6 +711,7 @@ E7 Validation
 Core/
 ├─ Sampling/
 │  ├─ SampleGenerator.h          # E1
+│  ├─ SampleDimensions.h         # E1
 │  ├─ Sobol.h                    # E2
 │  └─ Sampling.h
 │
@@ -590,7 +723,9 @@ Core/
 │  └─ Integrator.h
 │
 ├─ Reconstruction/
-│  └─ Reconstruction.h           # E4
+│  ├─ Reconstruction.h           # E4
+│  ├─ Film.h                     # E4
+│  └─ ReconstructionFilter.h     # E4
 │
 ├─ Denoiser/
 │  ├─ Denoiser.h
@@ -635,17 +770,24 @@ GPU runtime automation
 
 只有同时满足以下条件才算完成：
 
-- [ ] samplesPerPass 不再改变最终样本集合和输出结果。
+- [ ] samplesPerPass 不再改变样本集合、样本顺序、reduce 顺序和最终输出。
+- [ ] SampleGenerator 显式支持 pixel / replicate / sample-within-replicate / dimension。
+- [ ] 固定数量的独立 RQMC replicates 可用于 noise estimation。
 - [ ] 默认 Camera sampler 使用 Owen-scrambled Sobol 或验收通过的低差异实现。
-- [ ] SurfaceIdentity 已拆分为 instance / primitive / material。
-- [ ] Box 不同 face 能精确分类。
+- [ ] RQMC uncertainty 不再使用简单 IID variance / N 解释。
+- [ ] SurfaceIdentity 已拆分为 instance / primitive / material / surfaceGroup。
+- [ ] Box 不同 face 能精确分类，Mesh 相邻 triangle 可共享合理的 surfaceGroup。
 - [ ] Denoiser 不再依赖 primitiveId equality hard gate。
-- [ ] Coverage / Visibility 具备 sample count、variance/confidence 语义。
+- [ ] Coverage / Visibility 具备 sample count、replicate uncertainty 和 confidence 语义。
 - [ ] 单样本 layer 不再被错误视为 zero-noise high-confidence。
-- [ ] A-Trous 根据 variance / geometry confidence 自适应停止或缩小半径。
+- [ ] Film Reconstruction Filter 已进入 sample-to-pixel 正式管线。
+- [ ] 至少实现 Box 与 Tent filter，默认使用 Tent。
+- [ ] A-Trous 根据 noise / geometry / coverage confidence 使用连续 filter strength。
 - [ ] CPU 输出 Linear HDR PFM。
-- [ ] CI 生成 MSE / RMSE / PSNR 等 regression metrics。
+- [ ] CI 区分 deterministic correctness 与 render quality metrics。
+- [ ] CI 生成 Linear HDR MSE / RMSE / MAE / NRMSE，以及 tone-mapped PSNR。
 - [ ] CI 自动生成 16 / 64 / 256 SPP 的 Raw / Diffuse / Specular / Final。
+- [ ] validation 失败或手动运行时可输出 Coverage / Confidence / Variance / SurfaceGroup / Normal / Depth / FilterStrength Debug AOV。
 - [ ] 顶部灯边缘锯齿与随机噪声相较当前版本明显改善。
 - [ ] 短箱和长箱轮廓没有新的 halo / bleeding / surface mixing。
 - [ ] 16 → 64 → 256 SPP 在视觉和 Linear HDR metric 上表现出稳定收敛。
