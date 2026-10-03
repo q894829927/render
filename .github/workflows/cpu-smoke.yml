@@ -38,8 +38,9 @@ jobs:
 
       - name: Verify outputs
         run: |
-          test -s cornell_cpu_raw.ppm
-          test -s cornell_cpu_denoised.ppm
+          for signal in raw diffuse specular final; do
+            test -s "cornell_cpu_${signal}.ppm"
+          done
           echo "CPU smoke render outputs verified."
 
       - name: Upload render artifacts
@@ -48,5 +49,7 @@ jobs:
           name: cpu-smoke-render
           path: |
             cornell_cpu_raw.ppm
-            cornell_cpu_denoised.ppm
+            cornell_cpu_diffuse.ppm
+            cornell_cpu_specular.ppm
+            cornell_cpu_final.ppm
           if-no-files-found: error
