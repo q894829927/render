@@ -12,6 +12,8 @@
 - 多重重要性采样（MIS）
 - 俄罗斯轮盘赌（Russian Roulette）
 - 渐进式累积（Progressive Accumulation）
+- 确定性 SampleGenerator + 4 个 RQMC Replicates
+- Owen-scrambled Sobol（默认）+ deterministic hash reference sampler
 - 同采样域 Primary Guide
 - 方差引导 A-Trous Denoiser
 - Cornell Box
@@ -33,7 +35,16 @@ cmake --build build --config Release
 ./build/render_cpu 256 8 16
 ```
 
-三个参数依次是：`SPP`、`Samples Per Pass`、`Max Depth`。
+前三个参数依次是：`SPP`、`Samples Per Pass`、`Max Depth`。
+
+第四个可选参数选择采样器：
+
+```bash
+./build/render_cpu 256 8 16 owen   # 默认
+./build/render_cpu 256 8 16 hash   # deterministic reference
+```
+
+`Samples Per Pass` 只影响调度；相同 SPP 下不会改变样本集合或最终结果。
 
 ## 构建 CUDA
 
