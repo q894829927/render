@@ -17,7 +17,7 @@
 - Visibility-aware Reconstruction（coverage variance / confidence）
 - Film Reconstruction Filter：Tent（默认）/ Box（reference）
 - 同采样域 Primary Guide
-- 方差引导 A-Trous Denoiser
+- RQMC sampling-variance 驱动的 Adaptive A-Trous Denoiser
 - Cornell Box
 - CPU 多线程后端
 - CUDA 后端
