@@ -14,15 +14,6 @@
 
 using namespace render;
 
-namespace render {
-__device__ __constant__ std::uint16_t
-    gSobolPolynomialsDevice[kSobolMaxDimensions];
-__device__ __constant__ std::uint16_t
-    gSobolVInitOffsetsDevice[kSobolMaxDimensions + 1u];
-__device__ __constant__ std::uint16_t
-    gSobolVInitDevice[kSobolVInitCount];
-}
-
 #define CUDA_CHECK(call) do { \
     cudaError_t e=(call); \
     if(e!=cudaSuccess){ \

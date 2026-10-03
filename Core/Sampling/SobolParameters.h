@@ -204,11 +204,11 @@ inline constexpr std::uint16_t kSobolVInitHost[kSobolVInitCount] = {
 };
 
 #ifdef __CUDACC__
-extern __device__ __constant__ std::uint16_t
+static __device__ __constant__ std::uint16_t
     gSobolPolynomialsDevice[kSobolMaxDimensions];
-extern __device__ __constant__ std::uint16_t
+static __device__ __constant__ std::uint16_t
     gSobolVInitOffsetsDevice[kSobolMaxDimensions + 1u];
-extern __device__ __constant__ std::uint16_t
+static __device__ __constant__ std::uint16_t
     gSobolVInitDevice[kSobolVInitCount];
 #endif
 
