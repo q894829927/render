@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(render LANGUAGES CXX)
 
 option(RENDER_ENABLE_CUDA "Build CUDA backend when a CUDA compiler is available" ON)
