@@ -30,7 +30,7 @@ struct DenoiseSettings {
     float adaptiveSignalFloorDiffuse = 0.05f;
     float adaptiveSignalFloorSpecular = 0.02f;
     float adaptiveSampleTarget = 64.0f;
-    float adaptiveLowSampleBoost = 0.50f;
+    float adaptiveLowSampleBoost = 1.00f;
     float adaptiveGeometryFloor = 0.15f;
     float adaptiveCoverageFloor = 0.25f;
     float adaptiveSpecularMinRadiusFactor = 0.15f;
