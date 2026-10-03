@@ -266,6 +266,33 @@ enum class SamplerType {
 
 # E3 — SurfaceIdentity 拆分
 
+## E3 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：`2a5a078a3aa9aad0bcbebb99e3f0f74b9e13bf2a`
+
+已完成：
+
+- 新增 `SurfaceIdentity { instanceId, primitiveId, materialId, surfaceGroupId }`。
+- Primary Sample、HitRecord、LightHit 全链路携带完整 SurfaceIdentity。
+- Reconstruction layer key 改为 `(instanceId, surfaceGroupId)`，不再由 primitiveId 决定。
+- 同一 surfaceGroup 中命中多个 primitive 时，Resolved Layer 会把 representative primitiveId 标记为 invalid，避免伪装成单一 primitive。
+- Cornell Room、Short Box、Tall Box、Area Light 使用稳定 instance/material/group ID。
+- OrientedBox 现在精确识别六个 Face；每个 Face 有独立 primitiveId 和 surfaceGroupId。
+- AABB slab intersection 同时支持从盒外进入和从盒内射出时的正确 Face identity。
+- Denoiser 移除 `primitiveId == primitiveId` hard gate。
+- Denoiser 邻域改为 material compatibility + instance/group preference + depth/normal/albedo/roughness continuity。
+- 同一平滑 surfaceGroup 中的不同 primitive 可以共享降噪信息；硬折角仍由 normal discontinuity 阻断。
+- 新增 `SurfaceIdentityTest`，验证 layer grouping、Box Face identity、material boundary、hard-normal boundary 和 Cornell ID 规则。
+- SampleGeneratorTest + SurfaceIdentityTest 均通过，64 SPP samplesPerPass invariance 保持通过。
+- CPU Smoke、Render Validation、Sample Determinism、CUDA Compile Test 全部通过。
+
+视觉验证：
+
+- E3 没有改变 Camera sampling 或 Film reconstruction，因此顶部灯剩余 staircase 仍然存在，这是预期行为。
+- Box 顶面 / 侧面现在拥有明确不同的 surface groups，后续 E4 不会再把 Box 不同 Face 的 visibility/reconstruction 数据混成一个层。
+
 ## 目标
 
 把“样本属于哪个几何表面”和“两个像素能否互相降噪”从同一个 primitiveId 判断中拆开。
