@@ -36,6 +36,9 @@ struct DenoiseSettings {
     float adaptiveSpecularMinRadiusFactor = 0.15f;
 };
 
+// Continuous E5 decision: signal noise determines demand while geometry,
+ // visibility confidence and specular roughness gate how far that demand may
+ // propagate. No per-pixel hard iteration cutoff is used.
 struct AdaptiveFilterDecision {
     float filterStrength = 0.0f;
     float geometryConfidence = 0.0f;
