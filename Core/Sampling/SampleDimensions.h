@@ -22,13 +22,23 @@ enum class BounceSampleOffset : std::uint32_t {
     Reserved = 9u
 };
 
-RENDER_HD inline std::uint32_t BounceSampleDimension(int bounce, BounceSampleOffset offset) {
+RENDER_HD inline std::uint32_t BounceSampleDimension(
+    int bounce,
+    BounceSampleOffset offset)
+{
     return kPathDimensionBase +
            static_cast<std::uint32_t>(bounce) * kBounceDimensionStride +
            static_cast<std::uint32_t>(offset);
 }
 
-static_assert(static_cast<std::uint32_t>(BounceSampleOffset::Reserved) < kBounceDimensionStride,
-              "Bounce sample dimensions must fit inside the per-bounce stride.");
+RENDER_HD inline std::uint32_t RequiredSampleDimensionCount(int maxDepth) {
+    return kPathDimensionBase +
+           static_cast<std::uint32_t>(maxDepth) * kBounceDimensionStride;
+}
+
+static_assert(
+    static_cast<std::uint32_t>(BounceSampleOffset::Reserved) <
+        kBounceDimensionStride,
+    "Bounce sample dimensions must fit inside the per-bounce stride.");
 
 } // namespace render

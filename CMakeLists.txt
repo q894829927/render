@@ -11,6 +11,14 @@ add_executable(render_cpu
 )
 target_include_directories(render_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(sample_generator_test
+    Tests/SampleGeneratorTest.cpp
+)
+target_include_directories(sample_generator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+enable_testing()
+add_test(NAME sample_generator COMMAND sample_generator_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()

@@ -33,18 +33,22 @@ struct ColorMoments {
     }
 };
 
+struct ReplicateColorAccumulator {
+    Vec3 sum;
+    unsigned int sampleCount = 0;
+
+    RENDER_HD void Add(const Vec3& value) {
+        sum += value;
+        ++sampleCount;
+    }
+};
+
 struct ReplicateSignalAccumulator {
     Vec3 rawSum;
-    Vec3 diffuseSum;
-    Vec3 specularSum;
-    Vec3 emissionSum;
     unsigned int sampleCount = 0;
 
     RENDER_HD void Add(const PathSample& sample) {
         rawSum += sample.Total();
-        diffuseSum += sample.diffuse;
-        specularSum += sample.specular;
-        emissionSum += sample.emission;
         ++sampleCount;
     }
 };
@@ -62,6 +66,10 @@ struct SurfaceLayerAccumulator {
 
     ColorMoments diffuseIllumination;
     ColorMoments specular;
+    ReplicateColorAccumulator
+        diffuseReplicates[kSampleReplicateCount];
+    ReplicateColorAccumulator
+        specularReplicates[kSampleReplicateCount];
     Vec3 emissionSum;
 };
 
@@ -100,9 +108,13 @@ struct ResolvedPixel {
     ResolvedLayer layers[kPrimarySurfaceSlots];
 };
 
-RENDER_HD inline int FindOrCreateLayer(PixelAccumulator& pixel, std::uint32_t primitiveId) {
+RENDER_HD inline int FindOrCreateLayer(
+    PixelAccumulator& pixel,
+    std::uint32_t primitiveId)
+{
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
-        if (pixel.layers[i].count > 0 && pixel.layers[i].primitiveId == primitiveId)
+        if (pixel.layers[i].count > 0 &&
+            pixel.layers[i].primitiveId == primitiveId)
             return i;
     }
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
@@ -114,7 +126,10 @@ RENDER_HD inline int FindOrCreateLayer(PixelAccumulator& pixel, std::uint32_t pr
     return -1;
 }
 
-RENDER_HD inline void AccumulatePathSample(PixelAccumulator& pixel, const PathSample& sample) {
+RENDER_HD inline void AccumulatePathSample(
+    PixelAccumulator& pixel,
+    const PathSample& sample)
+{
     Vec3 total = sample.Total();
     pixel.raw.Add(total);
     ++pixel.sampleCount;
@@ -146,6 +161,12 @@ RENDER_HD inline void AccumulatePathSample(PixelAccumulator& pixel, const PathSa
         SafeDivideColor(sample.diffuse, sample.primary.albedo);
     layer.diffuseIllumination.Add(diffuseIllumination);
     layer.specular.Add(sample.specular);
+
+    if (sample.replicateId < kSampleReplicateCount) {
+        layer.diffuseReplicates[sample.replicateId].Add(diffuseIllumination);
+        layer.specularReplicates[sample.replicateId].Add(sample.specular);
+    }
+
     layer.emissionSum += sample.emission;
 }
 
@@ -153,12 +174,70 @@ RENDER_HD inline Vec3 Mean(const ColorMoments& m, unsigned int count) {
     return count > 0 ? m.sum / static_cast<float>(count) : Vec3(0.0f);
 }
 
-RENDER_HD inline Vec3 VarianceOfMean(const ColorMoments& m, unsigned int count) {
-    if (count <= 1) return Vec3(0.0f);
-    float n = static_cast<float>(count);
-    Vec3 mean = m.sum / n;
-    Vec3 sampleVariance = MaxZero(m.squareSum / n - Square(mean));
-    return sampleVariance / n;
+RENDER_HD inline Vec3 ConservativeVariance(const Vec3& mean) {
+    Vec3 scale(
+        fabsf(mean.x) + 0.25f,
+        fabsf(mean.y) + 0.25f,
+        fabsf(mean.z) + 0.25f);
+    return Square(scale);
+}
+
+RENDER_HD inline Vec3 ReplicateVarianceOfMean(
+    const ReplicateColorAccumulator replicates[kSampleReplicateCount],
+    const Vec3& fallbackMean)
+{
+    Vec3 meanOfMeans(0.0f);
+    int valid = 0;
+    for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
+        if (replicates[r].sampleCount == 0) continue;
+        meanOfMeans += replicates[r].sum /
+            static_cast<float>(replicates[r].sampleCount);
+        ++valid;
+    }
+
+    if (valid < 2) return ConservativeVariance(fallbackMean);
+    meanOfMeans = meanOfMeans / static_cast<float>(valid);
+
+    Vec3 squaredDeviation(0.0f);
+    for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
+        if (replicates[r].sampleCount == 0) continue;
+        Vec3 replicateMean = replicates[r].sum /
+            static_cast<float>(replicates[r].sampleCount);
+        squaredDeviation += Square(replicateMean - meanOfMeans);
+    }
+
+    const float denom =
+        static_cast<float>(valid * (valid - 1));
+    return MaxZero(squaredDeviation / denom);
+}
+
+RENDER_HD inline Vec3 RawReplicateVarianceOfMean(
+    const ReplicateSignalAccumulator replicates[kSampleReplicateCount],
+    const Vec3& fallbackMean)
+{
+    Vec3 meanOfMeans(0.0f);
+    int valid = 0;
+    for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
+        if (replicates[r].sampleCount == 0) continue;
+        meanOfMeans += replicates[r].rawSum /
+            static_cast<float>(replicates[r].sampleCount);
+        ++valid;
+    }
+
+    if (valid < 2) return ConservativeVariance(fallbackMean);
+    meanOfMeans = meanOfMeans / static_cast<float>(valid);
+
+    Vec3 squaredDeviation(0.0f);
+    for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
+        if (replicates[r].sampleCount == 0) continue;
+        Vec3 replicateMean = replicates[r].rawSum /
+            static_cast<float>(replicates[r].sampleCount);
+        squaredDeviation += Square(replicateMean - meanOfMeans);
+    }
+
+    const float denom =
+        static_cast<float>(valid * (valid - 1));
+    return MaxZero(squaredDeviation / denom);
 }
 
 RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
@@ -166,8 +245,10 @@ RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
     if (pixel.sampleCount == 0) return out;
 
     out.raw = Mean(pixel.raw, pixel.sampleCount);
-    out.rawVariance = VarianceOfMean(pixel.raw, pixel.sampleCount);
-    out.overflow = pixel.overflowSum / static_cast<float>(pixel.sampleCount);
+    out.rawVariance =
+        RawReplicateVarianceOfMean(pixel.replicates, out.raw);
+    out.overflow =
+        pixel.overflowSum / static_cast<float>(pixel.sampleCount);
 
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         const SurfaceLayerAccumulator& src = pixel.layers[i];
@@ -186,9 +267,13 @@ RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
             static_cast<float>(src.count) / static_cast<float>(pixel.sampleCount);
 
         dst.diffuseIllumination = Mean(src.diffuseIllumination, src.count);
-        dst.diffuseVariance = VarianceOfMean(src.diffuseIllumination, src.count);
+        dst.diffuseVariance = ReplicateVarianceOfMean(
+            src.diffuseReplicates, dst.diffuseIllumination);
+
         dst.specular = Mean(src.specular, src.count);
-        dst.specularVariance = VarianceOfMean(src.specular, src.count);
+        dst.specularVariance = ReplicateVarianceOfMean(
+            src.specularReplicates, dst.specular);
+
         dst.emission = src.emissionSum * inv;
     }
 
@@ -196,7 +281,8 @@ RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
 }
 
 RENDER_HD inline int FindResolvedLayer(
-    const ResolvedPixel& pixel, std::uint32_t primitiveId)
+    const ResolvedPixel& pixel,
+    std::uint32_t primitiveId)
 {
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         if (pixel.layers[i].valid &&

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -40,7 +41,7 @@ void ProgressivePass(
     std::vector<PixelAccumulator>& accumulation,
     int width, int height, int samplesThisPass, int sampleOffset,
     int maxDepth, const SceneView& scene, const Camera& camera,
-    std::uint32_t baseSeed, unsigned workers)
+    std::uint32_t baseSeed, SamplerType samplerType, unsigned workers)
 {
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
@@ -49,7 +50,7 @@ void ProgressivePass(
                 std::uint32_t globalSampleIndex =
                     static_cast<std::uint32_t>(sampleOffset + s);
                 SampleGenerator samples = MakeSampleGenerator(
-                    static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed);
+                    static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed, samplerType);
                 Sample2DValue cameraJitter =
                     samples.Sample2D(kCameraJitterXDimension);
 
@@ -143,6 +144,26 @@ int main(int argc, char** argv) {
     int targetSpp = argc > 1 ? std::max(1, std::atoi(argv[1])) : 256;
     int samplesPerPass = argc > 2 ? std::max(1, std::atoi(argv[2])) : 8;
     int maxDepth = argc > 3 ? std::max(1, std::atoi(argv[3])) : 16;
+    SamplerType samplerType = SamplerType::OwenSobol;
+    if (argc > 4) {
+        if (std::strcmp(argv[4], "hash") == 0 ||
+            std::strcmp(argv[4], "pseudo") == 0)
+            samplerType = SamplerType::PseudoRandomReference;
+        else if (std::strcmp(argv[4], "owen") != 0) {
+            std::cerr << "Unknown sampler '" << argv[4]
+                      << "'. Use owen or hash.\n";
+            return 2;
+        }
+    }
+    if (samplerType == SamplerType::OwenSobol &&
+        RequiredSampleDimensionCount(maxDepth) > kSobolMaxDimensions)
+    {
+        std::cerr << "Owen-Sobol supports maxDepth <= "
+                  << ((kSobolMaxDimensions - kPathDimensionBase) /
+                      kBounceDimensionStride)
+                  << " with the current direction table.\n";
+        return 2;
+    }
     unsigned workers = std::max(1u, std::thread::hardware_concurrency());
 
     SceneStorage storage = MakeCornellBox();
@@ -155,7 +176,10 @@ int main(int argc, char** argv) {
               << "\nTarget Samples: " << targetSpp
               << "\nSamples / Pass: " << samplesPerPass
               << "\nMax Depth: " << maxDepth
-              << "\nSampler: deterministic dimensioned hash"
+              << "\nSampler: "
+              << (samplerType == SamplerType::OwenSobol
+                    ? "Owen-scrambled Sobol"
+                    : "deterministic dimensioned hash")
               << "\nSample Replicates: " << kSampleReplicateCount
               << "\nArchitecture: layered primary-surface reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
@@ -170,7 +194,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp - accumulated);
         ProgressivePass(
             accumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456u, workers);
+            scene, camera, 123456u, samplerType, workers);
         accumulated += pass;
         std::cout << "\rAccumulating: " << accumulated << '/' << targetSpp
                   << " SPP" << std::flush;

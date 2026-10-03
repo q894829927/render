@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <cstring>
 #include <vector>
 
 #include "Core/Denoiser/ATrous.h"
@@ -12,6 +13,15 @@
 #include "Core/Scene/CornellBox.h"
 
 using namespace render;
+
+namespace render {
+__device__ __constant__ std::uint16_t
+    gSobolPolynomialsDevice[kSobolMaxDimensions];
+__device__ __constant__ std::uint16_t
+    gSobolVInitOffsetsDevice[kSobolMaxDimensions + 1u];
+__device__ __constant__ std::uint16_t
+    gSobolVInitDevice[kSobolVInitCount];
+}
 
 #define CUDA_CHECK(call) do { \
     cudaError_t e=(call); \
@@ -27,7 +37,8 @@ namespace {
 __global__ void ProgressiveRenderKernel(
     PixelAccumulator* accumulation,
     int width, int height, int samplesThisPass, int sampleOffset,
-    int maxDepth, SceneView scene, Camera camera, std::uint32_t baseSeed)
+    int maxDepth, SceneView scene, Camera camera, std::uint32_t baseSeed,
+    SamplerType samplerType)
 {
     int x = blockIdx.x*blockDim.x + threadIdx.x;
     int y = blockIdx.y*blockDim.y + threadIdx.y;
@@ -38,7 +49,7 @@ __global__ void ProgressiveRenderKernel(
         std::uint32_t globalSampleIndex =
             static_cast<std::uint32_t>(sampleOffset + s);
         SampleGenerator samples = MakeSampleGenerator(
-            static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed);
+            static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed, samplerType);
         Sample2DValue cameraJitter =
             samples.Sample2D(kCameraJitterXDimension);
 
@@ -145,9 +156,41 @@ int main(int argc, char** argv) {
     int targetSpp = argc > 1 ? std::max(1, std::atoi(argv[1])) : 256;
     int samplesPerPass = argc > 2 ? std::max(1, std::atoi(argv[2])) : 8;
     int maxDepth = argc > 3 ? std::max(1, std::atoi(argv[3])) : 16;
+    SamplerType samplerType = SamplerType::OwenSobol;
+    if (argc > 4) {
+        if (std::strcmp(argv[4], "hash") == 0 ||
+            std::strcmp(argv[4], "pseudo") == 0)
+            samplerType = SamplerType::PseudoRandomReference;
+        else if (std::strcmp(argv[4], "owen") != 0) {
+            std::cerr << "Unknown sampler '" << argv[4]
+                      << "'. Use owen or hash.\n";
+            return 2;
+        }
+    }
+    if (samplerType == SamplerType::OwenSobol &&
+        RequiredSampleDimensionCount(maxDepth) > kSobolMaxDimensions)
+    {
+        std::cerr << "Owen-Sobol supports maxDepth <= "
+                  << ((kSobolMaxDimensions - kPathDimensionBase) /
+                      kBounceDimensionStride)
+                  << " with the current direction table.\n";
+        return 2;
+    }
 
     int device = 0;
     CUDA_CHECK(cudaSetDevice(device));
+    CUDA_CHECK(cudaMemcpyToSymbol(
+        render::gSobolPolynomialsDevice,
+        render::kSobolPolynomialsHost,
+        sizeof(render::kSobolPolynomialsHost)));
+    CUDA_CHECK(cudaMemcpyToSymbol(
+        render::gSobolVInitOffsetsDevice,
+        render::kSobolVInitOffsetsHost,
+        sizeof(render::kSobolVInitOffsetsHost)));
+    CUDA_CHECK(cudaMemcpyToSymbol(
+        render::gSobolVInitDevice,
+        render::kSobolVInitHost,
+        sizeof(render::kSobolVInitHost)));
     cudaDeviceProp prop{};
     CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
 
@@ -196,7 +239,10 @@ int main(int argc, char** argv) {
               << "\nTarget Samples: " << targetSpp
               << "\nSamples / Pass: " << samplesPerPass
               << "\nMax Depth: " << maxDepth
-              << "\nSampler: deterministic dimensioned hash"
+              << "\nSampler: "
+              << (samplerType == SamplerType::OwenSobol
+                    ? "Owen-scrambled Sobol"
+                    : "deterministic dimensioned hash")
               << "\nSample Replicates: " << kSampleReplicateCount
               << "\nArchitecture: layered primary-surface reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
@@ -217,7 +263,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp-accumulated);
         ProgressiveRenderKernel<<<grid,block>>>(
             dAccumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456u);
+            scene, camera, 123456u, samplerType);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
         accumulated += pass;

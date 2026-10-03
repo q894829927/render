@@ -39,6 +39,9 @@ jobs:
       - name: Build
         run: cmake --build build -j2
 
+      - name: Run sample generator tests
+        run: ctest --test-dir build --output-on-failure
+
       - name: Render identical 64 SPP sample sets with different pass sizes
         run: |
           set -euo pipefail
