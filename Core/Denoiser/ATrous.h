@@ -17,6 +17,7 @@ RENDER_HD inline FilteredSignal ATrousLayerAt(
     const ResolvedPixel* pixels,
     const Vec3* inputColor,
     const Vec3* inputVariance,
+    const Vec3* samplingVariance,
     int pixelIndex,
     int layerSlot,
     int x,
@@ -38,6 +39,13 @@ RENDER_HD inline FilteredSignal ATrousLayerAt(
 
     Vec3 centerVar =
         inputVariance[centerSignalIndex];
+
+    // Spatial filtering changes the working variance used by bilateral
+    // weighting, but it does not create new independent path samples.
+    // Adaptive strength therefore uses the immutable reconstruction-time
+    // RQMC sampling uncertainty.
+    Vec3 centerSamplingVar =
+        samplingVariance[centerSignalIndex];
 
     if (!centerLayer.valid)
         return {
@@ -184,7 +192,7 @@ RENDER_HD inline FilteredSignal ATrousLayerAt(
         ComputeAdaptiveFilterDecision(
             centerLayer.guide,
             center,
-            centerVar,
+            centerSamplingVar,
             geometryConfidence,
             step,
             signal,

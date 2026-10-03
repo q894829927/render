@@ -104,6 +104,7 @@ void DenoisePass(
     const std::vector<ResolvedPixel>& resolved,
     const std::vector<Vec3>& inputColor, std::vector<Vec3>& outputColor,
     const std::vector<Vec3>& inputVariance, std::vector<Vec3>& outputVariance,
+    const std::vector<Vec3>& samplingVariance,
     DenoiseSignal signal, const DenoiseSettings& settings,
     int step, int width, int height,
     std::vector<float>& filterStrength,
@@ -116,6 +117,7 @@ void DenoisePass(
                 int i = LayerIndex(pixel, slot);
                 FilteredSignal filtered = ATrousLayerAt(
                     resolved.data(), inputColor.data(), inputVariance.data(),
+                    samplingVariance.data(),
                     pixel, slot, x, y, width, height, step, signal, settings);
                 outputColor[i] = filtered.color;
                 outputVariance[i] = filtered.variance;
@@ -268,12 +270,20 @@ int main(int argc, char** argv) {
     std::vector<Vec3> diffuseVarA(signalCount), diffuseVarB(signalCount);
     std::vector<Vec3> specularA(signalCount), specularB(signalCount);
     std::vector<Vec3> specularVarA(signalCount), specularVarB(signalCount);
+    std::vector<Vec3> diffuseSamplingVariance(signalCount);
+    std::vector<Vec3> specularSamplingVariance(signalCount);
     std::vector<float> diffuseStrength(signalCount, 0.0f);
     std::vector<float> specularStrength(signalCount, 0.0f);
 
     InitializeSignals(
         resolved, diffuseA, diffuseVarA, specularA, specularVarA,
         width, height, workers);
+
+    // Preserve the reconstruction-time RQMC uncertainty. Working variance
+    // may be propagated between A-Trous passes, but must not replace the
+    // sampling evidence used by the adaptive controller.
+    diffuseSamplingVariance = diffuseVarA;
+    specularSamplingVariance = specularVarA;
 
     auto denoiseStart = std::chrono::steady_clock::now();
 
@@ -290,10 +300,12 @@ int main(int argc, char** argv) {
         int step = 1 << iteration;
         DenoisePass(
             resolved, *diffIn, *diffOut, *diffVarIn, *diffVarOut,
+            diffuseSamplingVariance,
             DenoiseSignal::DiffuseIllumination, denoise, step,
             width, height, diffuseStrength, workers);
         DenoisePass(
             resolved, *specIn, *specOut, *specVarIn, *specVarOut,
+            specularSamplingVariance,
             DenoiseSignal::Specular, denoise, step,
             width, height, specularStrength, workers);
 

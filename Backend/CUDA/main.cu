@@ -97,6 +97,7 @@ __global__ void ATrousKernel(
     const ResolvedPixel* resolved,
     const Vec3* inputColor, Vec3* outputColor,
     const Vec3* inputVariance, Vec3* outputVariance,
+    const Vec3* samplingVariance,
     DenoiseSignal signal, DenoiseSettings settings,
     int step, int width, int height)
 {
@@ -108,7 +109,7 @@ __global__ void ATrousKernel(
     for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
         int i = LayerIndex(pixel, slot);
         FilteredSignal filtered = ATrousLayerAt(
-            resolved, inputColor, inputVariance,
+            resolved, inputColor, inputVariance, samplingVariance,
             pixel, slot, x, y, width, height, step, signal, settings);
         outputColor[i] = filtered.color;
         outputVariance[i] = filtered.variance;
@@ -233,6 +234,8 @@ int main(int argc, char** argv) {
     Vec3* dSpecularB = Alloc<Vec3>(signalCount);
     Vec3* dSpecularVarA = Alloc<Vec3>(signalCount);
     Vec3* dSpecularVarB = Alloc<Vec3>(signalCount);
+    Vec3* dDiffuseSamplingVariance = Alloc<Vec3>(signalCount);
+    Vec3* dSpecularSamplingVariance = Alloc<Vec3>(signalCount);
 
     Vec3* dRawOut = Alloc<Vec3>(n);
     Vec3* dDiffuseOut = Alloc<Vec3>(n);
@@ -293,6 +296,18 @@ int main(int argc, char** argv) {
         dResolved, dDiffuseA, dDiffuseVarA, dSpecularA, dSpecularVarA,
         static_cast<int>(n));
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(
+        dDiffuseSamplingVariance,
+        dDiffuseVarA,
+        sizeof(Vec3)*signalCount,
+        cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        dSpecularSamplingVariance,
+        dSpecularVarA,
+        sizeof(Vec3)*signalCount,
+        cudaMemcpyDeviceToDevice));
 
     cudaEvent_t ds{}, de{};
     CUDA_CHECK(cudaEventCreate(&ds));
@@ -312,10 +327,12 @@ int main(int argc, char** argv) {
         int step = 1 << iteration;
         ATrousKernel<<<grid,block>>>(
             dResolved, diffIn, diffOut, diffVarIn, diffVarOut,
+            dDiffuseSamplingVariance,
             DenoiseSignal::DiffuseIllumination, denoise, step, width, height);
         CUDA_CHECK(cudaGetLastError());
         ATrousKernel<<<grid,block>>>(
             dResolved, specIn, specOut, specVarIn, specVarOut,
+            dSpecularSamplingVariance,
             DenoiseSignal::Specular, denoise, step, width, height);
         CUDA_CHECK(cudaGetLastError());
 
@@ -365,6 +382,8 @@ int main(int argc, char** argv) {
     cudaFree(dSpecularOut);
     cudaFree(dDiffuseOut);
     cudaFree(dRawOut);
+    cudaFree(dSpecularSamplingVariance);
+    cudaFree(dDiffuseSamplingVariance);
     cudaFree(dSpecularVarB);
     cudaFree(dSpecularVarA);
     cudaFree(dSpecularB);

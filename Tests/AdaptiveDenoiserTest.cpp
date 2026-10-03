@@ -224,6 +224,7 @@ int main() {
             pixels,
             inputColor,
             inputVariance,
+            inputVariance,
             0,
             0,
             0,
@@ -238,6 +239,39 @@ int main() {
         noNoise.filterStrength == 0.0f &&
         fabsf(noNoise.color.x - 0.5f) < 1e-6f,
         "Adaptive A-Trous must be an exact no-op for zero-noise input.");
+
+    Vec3 workingVariance[4] = {
+        Vec3(0.0f),
+        Vec3(0.0f),
+        Vec3(0.0f),
+        Vec3(0.0f)
+    };
+    Vec3 samplingVariance[4] = {
+        Vec3(0.04f),
+        Vec3(0.0f),
+        Vec3(0.0f),
+        Vec3(0.0f)
+    };
+
+    FilteredSignal preservedSamplingUncertainty =
+        ATrousLayerAt(
+            pixels,
+            inputColor,
+            workingVariance,
+            samplingVariance,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            DenoiseSignal::DiffuseIllumination,
+            settings);
+
+    ok &= Check(
+        preservedSamplingUncertainty.filterStrength > 0.0f,
+        "Filtered working variance must not erase original sampling uncertainty.");
 
     if (!ok) return 1;
     std::cout << "Adaptive denoiser tests passed.\n";
