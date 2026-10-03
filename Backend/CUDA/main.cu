@@ -9,6 +9,7 @@
 #include "Core/Denoiser/ATrous.h"
 #include "Core/Integrator/Integrator.h"
 #include "Core/Output/ImageIO.h"
+#include "Core/Reconstruction/Film.h"
 #include "Core/Reconstruction/Reconstruction.h"
 #include "Core/Scene/CornellBox.h"
 
@@ -29,7 +30,7 @@ __global__ void ProgressiveRenderKernel(
     PixelAccumulator* accumulation,
     int width, int height, int samplesThisPass, int sampleOffset,
     int maxDepth, SceneView scene, Camera camera, std::uint32_t baseSeed,
-    SamplerType samplerType)
+    SamplerType samplerType, ReconstructionFilterType filterType)
 {
     int x = blockIdx.x*blockDim.x + threadIdx.x;
     int y = blockIdx.y*blockDim.y + threadIdx.y;
@@ -41,14 +42,15 @@ __global__ void ProgressiveRenderKernel(
             static_cast<std::uint32_t>(sampleOffset + s);
         SampleGenerator samples = MakeSampleGenerator(
             static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed, samplerType);
-        Sample2DValue cameraJitter =
-            samples.Sample2D(kCameraJitterXDimension);
+        FilmSample filmSample =
+            GenerateFilmSample(
+                x, y, samples, filterType);
 
         float px =
-            (2.0f*((x+cameraJitter.x)/static_cast<float>(width))-1.0f) *
+            (2.0f*(filmSample.rasterX/static_cast<float>(width))-1.0f) *
             camera.viewportWidth * 0.5f;
         float py =
-            (2.0f*((y+cameraJitter.y)/static_cast<float>(height))-1.0f) *
+            (2.0f*(filmSample.rasterY/static_cast<float>(height))-1.0f) *
             camera.viewportHeight * 0.5f;
         Ray ray{
             camera.position,
@@ -158,6 +160,18 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    ReconstructionFilterType filterType =
+        ReconstructionFilterType::Tent;
+    if (argc > 5) {
+        if (std::strcmp(argv[5], "box") == 0)
+            filterType = ReconstructionFilterType::Box;
+        else if (std::strcmp(argv[5], "tent") != 0) {
+            std::cerr << "Unknown reconstruction filter '" << argv[5]
+                      << "'. Use tent or box.\n";
+            return 2;
+        }
+    }
+
     if (samplerType == SamplerType::OwenSobol &&
         RequiredSampleDimensionCount(maxDepth) > kSobolMaxDimensions)
     {
@@ -235,7 +249,11 @@ int main(int argc, char** argv) {
                     ? "Owen-scrambled Sobol"
                     : "deterministic dimensioned hash")
               << "\nSample Replicates: " << kSampleReplicateCount
-              << "\nArchitecture: layered primary-surface reconstruction"
+              << "\nFilm Filter: "
+              << (filterType == ReconstructionFilterType::Tent
+                    ? "Tent"
+                    : "Box")
+              << "\nArchitecture: visibility-aware image reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
               << denoise.iterations << "\n\n";
 
@@ -254,7 +272,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp-accumulated);
         ProgressiveRenderKernel<<<grid,block>>>(
             dAccumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456u, samplerType);
+            scene, camera, 123456u, samplerType, filterType);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
         accumulated += pass;

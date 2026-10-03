@@ -5,13 +5,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <cstring>
 #include <thread>
 #include <vector>
 
 #include "Core/Denoiser/ATrous.h"
 #include "Core/Integrator/Integrator.h"
 #include "Core/Output/ImageIO.h"
+#include "Core/Reconstruction/Film.h"
 #include "Core/Reconstruction/Reconstruction.h"
 #include "Core/Scene/CornellBox.h"
 
@@ -41,7 +41,8 @@ void ProgressivePass(
     std::vector<PixelAccumulator>& accumulation,
     int width, int height, int samplesThisPass, int sampleOffset,
     int maxDepth, const SceneView& scene, const Camera& camera,
-    std::uint32_t baseSeed, SamplerType samplerType, unsigned workers)
+    std::uint32_t baseSeed, SamplerType samplerType,
+    ReconstructionFilterType filterType, unsigned workers)
 {
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
@@ -51,14 +52,15 @@ void ProgressivePass(
                     static_cast<std::uint32_t>(sampleOffset + s);
                 SampleGenerator samples = MakeSampleGenerator(
                     static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed, samplerType);
-                Sample2DValue cameraJitter =
-                    samples.Sample2D(kCameraJitterXDimension);
+                FilmSample filmSample =
+                    GenerateFilmSample(
+                        x, y, samples, filterType);
 
                 float px =
-                    (2.0f * ((x + cameraJitter.x) / static_cast<float>(width)) - 1.0f) *
+                    (2.0f * (filmSample.rasterX / static_cast<float>(width)) - 1.0f) *
                     camera.viewportWidth * 0.5f;
                 float py =
-                    (2.0f * ((y + cameraJitter.y) / static_cast<float>(height)) - 1.0f) *
+                    (2.0f * (filmSample.rasterY / static_cast<float>(height)) - 1.0f) *
                     camera.viewportHeight * 0.5f;
 
                 Ray ray{
@@ -155,6 +157,18 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    ReconstructionFilterType filterType =
+        ReconstructionFilterType::Tent;
+    if (argc > 5) {
+        if (std::strcmp(argv[5], "box") == 0)
+            filterType = ReconstructionFilterType::Box;
+        else if (std::strcmp(argv[5], "tent") != 0) {
+            std::cerr << "Unknown reconstruction filter '" << argv[5]
+                      << "'. Use tent or box.\n";
+            return 2;
+        }
+    }
+
     if (samplerType == SamplerType::OwenSobol &&
         RequiredSampleDimensionCount(maxDepth) > kSobolMaxDimensions)
     {
@@ -181,7 +195,11 @@ int main(int argc, char** argv) {
                     ? "Owen-scrambled Sobol"
                     : "deterministic dimensioned hash")
               << "\nSample Replicates: " << kSampleReplicateCount
-              << "\nArchitecture: layered primary-surface reconstruction"
+              << "\nFilm Filter: "
+              << (filterType == ReconstructionFilterType::Tent
+                    ? "Tent"
+                    : "Box")
+              << "\nArchitecture: visibility-aware image reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
               << denoise.iterations << "\n\n";
 
@@ -194,7 +212,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp - accumulated);
         ProgressivePass(
             accumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456u, samplerType, workers);
+            scene, camera, 123456u, samplerType, filterType, workers);
         accumulated += pass;
         std::cout << "\rAccumulating: " << accumulated << '/' << targetSpp
                   << " SPP" << std::flush;

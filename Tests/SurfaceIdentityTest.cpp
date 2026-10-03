@@ -44,6 +44,9 @@ SurfaceGuide MakeGuide(
     guide.roughness = 0.7f;
     guide.metallic = 0.0f;
     guide.coverage = 1.0f;
+    guide.coverageVariance = 0.0f;
+    guide.coverageConfidence = 1.0f;
+    guide.primarySampleCount = 16u;
     return guide;
 }
 
@@ -67,10 +70,10 @@ int main() {
     AccumulatePathSample(pixel, MakePrimarySample(triA));
     AccumulatePathSample(pixel, MakePrimarySample(triB));
     ok &= Check(
-        pixel.layers[0].count == 2u,
+        pixel.layers[0].visibility.hitCount == 2u,
         "Same surfaceGroup samples were not merged into one layer.");
     ok &= Check(
-        pixel.layers[1].count == 0u,
+        pixel.layers[1].visibility.hitCount == 0u,
         "Same surfaceGroup unexpectedly consumed a second layer.");
     ok &= Check(
         pixel.layers[0].identity.primitiveId == kInvalidSurfaceId,
@@ -78,7 +81,7 @@ int main() {
 
     AccumulatePathSample(pixel, MakePrimarySample(otherGroup));
     ok &= Check(
-        pixel.layers[1].count == 1u,
+        pixel.layers[1].visibility.hitCount == 1u,
         "Different surfaceGroup did not allocate a separate layer.");
 
     Material white{Vec3(0.73f), 0.0f, 0.75f};

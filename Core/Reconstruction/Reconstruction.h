@@ -6,6 +6,7 @@
 namespace render {
 
 constexpr int kPrimarySurfaceSlots = 4;
+constexpr float kVisibilityConfidenceSampleTarget = 16.0f;
 
 RENDER_HD inline Vec3 Square(const Vec3& v) {
     return {v.x*v.x, v.y*v.y, v.z*v.z};
@@ -53,9 +54,28 @@ struct ReplicateSignalAccumulator {
     }
 };
 
+struct VisibilityAccumulator {
+    unsigned int hitCount = 0;
+    unsigned int replicateHitCount[kSampleReplicateCount] = {};
+
+    RENDER_HD void Add(std::uint32_t replicateId) {
+        ++hitCount;
+        if (replicateId < kSampleReplicateCount)
+            ++replicateHitCount[replicateId];
+    }
+};
+
+struct VisibilityEstimate {
+    float coverage = 0.0f;
+    float variance = 0.25f;
+    float confidence = 0.0f;
+    unsigned int hitCount = 0;
+    unsigned int sampleCount = 0;
+};
+
 struct SurfaceLayerAccumulator {
     SurfaceIdentity identity{};
-    unsigned int count = 0;
+    VisibilityAccumulator visibility;
 
     Vec3 normalSum;
     Vec3 albedoSum;
@@ -77,7 +97,12 @@ struct PixelAccumulator {
     ColorMoments raw;
     SurfaceLayerAccumulator layers[kPrimarySurfaceSlots];
     ReplicateSignalAccumulator replicates[kSampleReplicateCount];
-    Vec3 overflowSum;
+
+    VisibilityAccumulator backgroundVisibility;
+    VisibilityAccumulator overflowVisibility;
+    Vec3 backgroundSum;
+    Vec3 overflowSurfaceSum;
+
     unsigned int sampleCount = 0;
 };
 
@@ -87,7 +112,12 @@ struct SurfaceGuide {
     float depth = kInf;
     float roughness = 0.0f;
     float metallic = 0.0f;
+
     float coverage = 0.0f;
+    float coverageVariance = 0.25f;
+    float coverageConfidence = 0.0f;
+    unsigned int primarySampleCount = 0;
+
     SurfaceIdentity identity{};
 };
 
@@ -104,7 +134,11 @@ struct ResolvedLayer {
 struct ResolvedPixel {
     Vec3 raw;
     Vec3 rawVariance;
-    Vec3 overflow;
+    Vec3 residual;
+
+    VisibilityEstimate backgroundVisibility;
+    VisibilityEstimate overflowVisibility;
+
     ResolvedLayer layers[kPrimarySurfaceSlots];
 };
 
@@ -123,7 +157,7 @@ RENDER_HD inline int FindOrCreateLayer(
     const SurfaceIdentity& identity)
 {
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
-        if (pixel.layers[i].count > 0 &&
+        if (pixel.layers[i].visibility.hitCount > 0 &&
             SameReconstructionSurface(
                 pixel.layers[i].identity,
                 identity))
@@ -136,7 +170,7 @@ RENDER_HD inline int FindOrCreateLayer(
     }
 
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
-        if (pixel.layers[i].count == 0) {
+        if (pixel.layers[i].visibility.hitCount == 0) {
             pixel.layers[i].identity = identity;
             return i;
         }
@@ -156,20 +190,24 @@ RENDER_HD inline void AccumulatePathSample(
         pixel.replicates[sample.replicateId].Add(sample);
 
     if (!sample.primary.valid) {
-        pixel.overflowSum += total;
+        pixel.backgroundVisibility.Add(sample.replicateId);
+        pixel.backgroundSum += total;
         return;
     }
 
     int slot = FindOrCreateLayer(
         pixel,
         sample.primary.identity);
+
     if (slot < 0) {
-        pixel.overflowSum += total;
+        pixel.overflowVisibility.Add(sample.replicateId);
+        pixel.overflowSurfaceSum += total;
         return;
     }
 
     SurfaceLayerAccumulator& layer = pixel.layers[slot];
-    ++layer.count;
+    layer.visibility.Add(sample.replicateId);
+
     layer.normalSum += sample.primary.normal;
     layer.albedoSum += sample.primary.albedo;
     layer.depthSum += sample.primary.depth;
@@ -178,7 +216,9 @@ RENDER_HD inline void AccumulatePathSample(
     layer.metallicSum += sample.primary.metallic;
 
     Vec3 diffuseIllumination =
-        SafeDivideColor(sample.diffuse, sample.primary.albedo);
+        SafeDivideColor(
+            sample.diffuse,
+            sample.primary.albedo);
     layer.diffuseIllumination.Add(diffuseIllumination);
     layer.specular.Add(sample.specular);
 
@@ -190,7 +230,10 @@ RENDER_HD inline void AccumulatePathSample(
     layer.emissionSum += sample.emission;
 }
 
-RENDER_HD inline Vec3 Mean(const ColorMoments& m, unsigned int count) {
+RENDER_HD inline Vec3 Mean(
+    const ColorMoments& m,
+    unsigned int count)
+{
     return count > 0
         ? m.sum / static_cast<float>(count)
         : Vec3(0.0f);
@@ -210,23 +253,30 @@ RENDER_HD inline Vec3 ReplicateVarianceOfMean(
 {
     Vec3 meanOfMeans(0.0f);
     int valid = 0;
+
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
-        meanOfMeans += replicates[r].sum /
+        meanOfMeans +=
+            replicates[r].sum /
             static_cast<float>(replicates[r].sampleCount);
         ++valid;
     }
 
-    if (valid < 2) return ConservativeVariance(fallbackMean);
-    meanOfMeans = meanOfMeans / static_cast<float>(valid);
+    if (valid < 2)
+        return ConservativeVariance(fallbackMean);
+
+    meanOfMeans =
+        meanOfMeans / static_cast<float>(valid);
 
     Vec3 squaredDeviation(0.0f);
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
+
         Vec3 replicateMean =
             replicates[r].sum /
             static_cast<float>(replicates[r].sampleCount);
-        squaredDeviation += Square(replicateMean - meanOfMeans);
+        squaredDeviation +=
+            Square(replicateMean - meanOfMeans);
     }
 
     const float denom =
@@ -240,28 +290,108 @@ RENDER_HD inline Vec3 RawReplicateVarianceOfMean(
 {
     Vec3 meanOfMeans(0.0f);
     int valid = 0;
+
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
-        meanOfMeans += replicates[r].rawSum /
+
+        meanOfMeans +=
+            replicates[r].rawSum /
             static_cast<float>(replicates[r].sampleCount);
         ++valid;
     }
 
-    if (valid < 2) return ConservativeVariance(fallbackMean);
-    meanOfMeans = meanOfMeans / static_cast<float>(valid);
+    if (valid < 2)
+        return ConservativeVariance(fallbackMean);
+
+    meanOfMeans =
+        meanOfMeans / static_cast<float>(valid);
 
     Vec3 squaredDeviation(0.0f);
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
+
         Vec3 replicateMean =
             replicates[r].rawSum /
             static_cast<float>(replicates[r].sampleCount);
-        squaredDeviation += Square(replicateMean - meanOfMeans);
+        squaredDeviation +=
+            Square(replicateMean - meanOfMeans);
     }
 
     const float denom =
         static_cast<float>(valid * (valid - 1));
     return MaxZero(squaredDeviation / denom);
+}
+
+RENDER_HD inline VisibilityEstimate ResolveVisibility(
+    const VisibilityAccumulator& visibility,
+    const ReplicateSignalAccumulator
+        replicates[kSampleReplicateCount],
+    unsigned int totalSampleCount)
+{
+    VisibilityEstimate out{};
+    out.hitCount = visibility.hitCount;
+    out.sampleCount = totalSampleCount;
+
+    if (totalSampleCount == 0)
+        return out;
+
+    out.coverage =
+        static_cast<float>(visibility.hitCount) /
+        static_cast<float>(totalSampleCount);
+
+    float replicateCoverages[kSampleReplicateCount] = {};
+    int valid = 0;
+    float meanCoverage = 0.0f;
+
+    for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
+        unsigned int denominator =
+            replicates[r].sampleCount;
+        if (denominator == 0) continue;
+
+        float coverage =
+            static_cast<float>(
+                visibility.replicateHitCount[r]) /
+            static_cast<float>(denominator);
+
+        replicateCoverages[valid++] = coverage;
+        meanCoverage += coverage;
+    }
+
+    if (valid < 2) {
+        out.variance = 0.25f;
+        out.confidence = 0.0f;
+        return out;
+    }
+
+    meanCoverage /= static_cast<float>(valid);
+
+    float squaredDeviation = 0.0f;
+    for (int i = 0; i < valid; ++i) {
+        float d =
+            replicateCoverages[i] - meanCoverage;
+        squaredDeviation += d*d;
+    }
+
+    out.variance =
+        squaredDeviation /
+        static_cast<float>(valid * (valid - 1));
+
+    float standardError =
+        sqrtf(fmaxf(out.variance, 0.0f));
+
+    float sampleConfidence =
+        Saturate(
+            static_cast<float>(totalSampleCount) /
+            kVisibilityConfidenceSampleTarget);
+
+    float uncertaintyConfidence =
+        1.0f -
+        Saturate(4.0f * standardError);
+
+    out.confidence =
+        sampleConfidence * uncertaintyConfidence;
+
+    return out;
 }
 
 RENDER_HD inline ResolvedPixel ResolvePixel(
@@ -270,22 +400,42 @@ RENDER_HD inline ResolvedPixel ResolvePixel(
     ResolvedPixel out{};
     if (pixel.sampleCount == 0) return out;
 
-    out.raw = Mean(pixel.raw, pixel.sampleCount);
+    out.raw =
+        Mean(pixel.raw, pixel.sampleCount);
+
     out.rawVariance =
         RawReplicateVarianceOfMean(
             pixel.replicates,
             out.raw);
-    out.overflow =
-        pixel.overflowSum /
+
+    out.residual =
+        (pixel.backgroundSum +
+         pixel.overflowSurfaceSum) /
         static_cast<float>(pixel.sampleCount);
+
+    out.backgroundVisibility =
+        ResolveVisibility(
+            pixel.backgroundVisibility,
+            pixel.replicates,
+            pixel.sampleCount);
+
+    out.overflowVisibility =
+        ResolveVisibility(
+            pixel.overflowVisibility,
+            pixel.replicates,
+            pixel.sampleCount);
 
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         const SurfaceLayerAccumulator& src =
             pixel.layers[i];
-        if (src.count == 0) continue;
+
+        const unsigned int hitCount =
+            src.visibility.hitCount;
+        if (hitCount == 0) continue;
 
         float inv =
-            1.0f / static_cast<float>(src.count);
+            1.0f / static_cast<float>(hitCount);
+
         ResolvedLayer& dst = out.layers[i];
         dst.valid = 1;
         dst.guide.identity = src.identity;
@@ -299,21 +449,35 @@ RENDER_HD inline ResolvedPixel ResolvePixel(
             src.roughnessSum * inv;
         dst.guide.metallic =
             src.metallicSum * inv;
+
+        VisibilityEstimate visibility =
+            ResolveVisibility(
+                src.visibility,
+                pixel.replicates,
+                pixel.sampleCount);
+
         dst.guide.coverage =
-            static_cast<float>(src.count) /
-            static_cast<float>(pixel.sampleCount);
+            visibility.coverage;
+        dst.guide.coverageVariance =
+            visibility.variance;
+        dst.guide.coverageConfidence =
+            visibility.confidence;
+        dst.guide.primarySampleCount =
+            visibility.hitCount;
 
         dst.diffuseIllumination =
             Mean(
                 src.diffuseIllumination,
-                src.count);
+                hitCount);
+
         dst.diffuseVariance =
             ReplicateVarianceOfMean(
                 src.diffuseReplicates,
                 dst.diffuseIllumination);
 
         dst.specular =
-            Mean(src.specular, src.count);
+            Mean(src.specular, hitCount);
+
         dst.specularVariance =
             ReplicateVarianceOfMean(
                 src.specularReplicates,
@@ -340,8 +504,13 @@ RENDER_HD inline int FindReconstructionLayer(
     return -1;
 }
 
-RENDER_HD inline int LayerIndex(int pixelIndex, int slot) {
-    return pixelIndex * kPrimarySurfaceSlots + slot;
+RENDER_HD inline int LayerIndex(
+    int pixelIndex,
+    int slot)
+{
+    return pixelIndex *
+           kPrimarySurfaceSlots +
+           slot;
 }
 
 } // namespace render

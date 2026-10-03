@@ -56,6 +56,13 @@ RENDER_HD inline float SurfaceGuideWeight(
         -fabsf(sample.coverage - center.coverage) /
         fmaxf(settings.phiCoverage, 1e-5f));
 
+    float coverageConfidence =
+        fminf(
+            center.coverageConfidence,
+            sample.coverageConfidence);
+    float coverageConfidenceWeight =
+        0.35f + 0.65f * Saturate(coverageConfidence);
+
     bool centerFinite = IsFinite(center.depth);
     bool sampleFinite = IsFinite(sample.depth);
     if (centerFinite != sampleFinite) return 0.0f;
@@ -109,6 +116,7 @@ RENDER_HD inline float SurfaceGuideWeight(
 
     return identityWeight *
            coverageWeight *
+           coverageConfidenceWeight *
            depthWeight *
            normalWeight *
            albedoWeight *

@@ -25,6 +25,12 @@ add_executable(surface_identity_test
 target_include_directories(surface_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME surface_identity COMMAND surface_identity_test)
 
+add_executable(reconstruction_test
+    Tests/ReconstructionTest.cpp
+)
+target_include_directories(reconstruction_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME reconstruction COMMAND reconstruction_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()
