@@ -1,0 +1,73 @@
+name: Render Preview
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/render-preview.yml"
+      - ".github/workflows/cpu-smoke.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/render-preview.yml"
+  workflow_dispatch:
+
+jobs:
+  render-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CPU renderer
+        run: |
+          cmake -S . -B build \
+            -DRENDER_ENABLE_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Render preview
+        run: ./build/render_cpu 16 4 8
+
+      - name: Verify PPM outputs
+        run: |
+          test -s cornell_cpu_raw.ppm
+          test -s cornell_cpu_denoised.ppm
+
+      - name: Convert PPM to PNG
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          for stem in ("cornell_cpu_raw", "cornell_cpu_denoised"):
+              image = Image.open(stem + ".ppm")
+              image.save(stem + ".png", optimize=True)
+              print(f"Saved {stem}.png: {image.width}x{image.height}")
+          PY
+
+      - name: Verify PNG outputs
+        run: |
+          test -s cornell_cpu_raw.png
+          test -s cornell_cpu_denoised.png
+          file cornell_cpu_raw.png
+          file cornell_cpu_denoised.png
+
+      - name: Upload preview images
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-preview
+          path: |
+            cornell_cpu_raw.png
+            cornell_cpu_denoised.png
+          if-no-files-found: error
+          retention-days: 30
