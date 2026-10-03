@@ -192,6 +192,34 @@ CI 增加 SampleSequenceDeterminism 检查。
 
 # E2 — Camera jitter 改为 CMJ / Owen-Sobol
 
+## E2 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：
+
+- `a11fd9f3b74aa885afca4d4c48c1170e9300b7a7`：Owen-Sobol / replicate uncertainty 主实现。
+- `212b131d8c617f2f0e96987afee600eb454d0798`：修正 CUDA Sobol 常量表定义，CUDA compile CI 通过。
+
+已完成：
+
+- 默认 sampler 从 deterministic hash 切换为 Owen-scrambled Sobol。
+- 保留 `hash / pseudo` reference sampler，可通过第四个 CLI 参数做 A/B。
+- 使用 Joe-Kuo D(6) 前 256 维 Sobol 参数，覆盖当前默认 `maxDepth=16` 的 Camera / Light / BSDF / RR dimensions。
+- Camera X/Y 固定使用 Dimension 0/1；所有 Path dimensions 继续通过统一 SampleGenerator 获取。
+- 4 个 RQMC replicate 使用独立 pixel/replicate scramble。
+- 使用 practical hash-based fast Owen-style scramble，避免逐 bit nested permutation 带来的路径追踪成本。
+- Surface signal 增加 per-replicate accumulation；当前 diffuse/specular uncertainty 改为 replicate means 之间估计，不再把 Sobol 序列内部样本直接当 IID。
+- replicate 样本不足时使用 conservative variance，而不是错误返回 zero-noise。
+- 新增 `SampleGeneratorTest`：校验基础 Sobol 序列、determinism、replicate scramble 独立性，以及 Camera 前 16 个样本的 4×4 stratification。
+- `Sample Determinism` CI 继续验证 64 SPP 下 samplesPerPass = 1 / 2 / 4 / 8 / 16 输出完全一致。
+- CPU Smoke、Render Validation、Sample Determinism、CUDA Compile Test 全部通过。
+
+视觉验证：
+
+- 16 / 64 / 256 SPP 下灯边 coverage 的随机抖动较 E1 有下降。
+- 灯边仍保留约一像素尺度的 staircase；这是 Box-like pixel reconstruction 的问题，按计划由 E4 Film Reconstruction Filter 解决，E2 不做后处理模糊补丁。
+
 ## 目标
 
 减少 Primary Visibility 的白噪声，使灯边缘、箱子轮廓、墙体边界在相同 SPP 下得到更均匀的 coverage 估计。
