@@ -87,6 +87,25 @@ SampleGenerator
 
 # E1 — 统一 SampleGenerator
 
+## E1 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：`15379426a0b9175a845f7d7ea94bf22cb856b117`
+
+已完成：
+
+- `SampleDimensions.h`：固定 Camera / Light / BSDF / RR dimension registry。
+- `SampleGenerator.h`：无状态、确定性的 pixel / replicate / sample / dimension 接口。
+- 固定 4 个 replicate，global sample 按 round-robin 映射到 replicate。
+- CPU / CUDA 移除依赖随机数消费顺序的 stateful RNG。
+- PathSample 携带 replicateId，PixelAccumulator 保存 replicate signal accumulator。
+- 新增 `Sample Determinism` CI。
+- 64 SPP 下 samplesPerPass = 1 / 2 / 4 / 8 / 16 的 Linear Hash 与 PPM 输出完全一致。
+- CPU Smoke、Render Validation、CUDA Compile Test 全部通过。
+
+E1 仍使用 deterministic hash 作为 reference sampler；Owen-scrambled Sobol 的实际序列切换属于 E2。
+
 ## 目标
 
 建立 CPU / CUDA 共用的确定性 SampleGenerator，使结果与 samplesPerPass 无关。
