@@ -383,6 +383,50 @@ roughness / metallic compatibility
 
 # E4 — Image Reconstruction：Coverage / Visibility + Film Filter
 
+## E4 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：
+
+- `11a9a6500bf72f332cc26ef40e473df6f6d037f0`：Visibility moments + Film reconstruction 主实现。
+- `ec89db0b0870ac6b817979d32bd7df5ae6c7a1a1`：修正 Compose residual 命名并完成全套 CI。
+
+已完成：
+
+- 新增 `ReconstructionFilterType { Box, Tent }`，默认使用 Tent，Box 保留为 reference/debug。
+- 新增 `FilmSample`，Camera Dimension 0/1 不再直接解释为 pixel 内 uniform jitter，而是先通过 reconstruction filter 生成连续 raster sample。
+- Film reconstruction 采用 **per-output-pixel gather / normalized-kernel importance sampling**，而不是跨像素 splat。每个输出像素直接采样其归一化 Box/Tent kernel，因此 `filter / pdf = 1`，不需要跨像素 atomic，也不存在 splat 边界的额外 weight normalization。
+- Tent kernel 使用标准 1D 三角核 `p(x)=1-|x|`、support `[-1,1]`，通过 inverse CDF 直接采样；2D 使用可分离 Tent。
+- Visibility 从单一 hitCount 升级为 `VisibilityAccumulator / VisibilityEstimate`。
+- 每个 Surface Layer 记录 per-replicate hit count，并使用独立 RQMC replicate coverage estimates 计算 coverage variance。
+- Visibility 输出正式包含 `coverage / variance / confidence / hitCount / sampleCount`。
+- 单 replicate / 单样本情况使用 conservative coverage variance，confidence=0，不再被视为 zero-noise。
+- Background / miss visibility 与 layer-overflow visibility 分开记录；surface + background + overflow 的 visibility mass 可以显式核对。
+- SurfaceGuide 现在携带 `coverageVariance / coverageConfidence / primarySampleCount`，并传入 Denoiser guide weighting。
+- Emission 继续通过 Primary Surface Layer 的 reconstructed coverage 合成，没有针对 Area Light 增加特殊 AA 分支。
+- CPU/CUDA 使用相同 Film / Visibility reconstruction 定义。
+- 新增 `ReconstructionTest`，覆盖 Box/Tent support、Tent inverse CDF 对称性、FilmSample footprint、balanced/imbalanced replicate coverage、background mass conservation 和 single-sample low confidence。
+- SampleGeneratorTest、SurfaceIdentityTest、ReconstructionTest 全部通过。
+- 64 SPP 下 samplesPerPass = 1 / 2 / 4 / 8 / 16 determinism 继续完全一致。
+- CPU Smoke、Render Validation、Sample Determinism、CUDA Compile Test 全部通过。
+
+视觉验收：
+
+- 16 SPP 顶灯下边缘在 E3 中存在明显逐像素上下跳动；E4 Tent 后中央边缘明显稳定，随机 staircase 显著减少。
+- 64 SPP 的中央灯下边缘在当前阈值检查中已经稳定为单一 scanline；E3 同区域仍存在多次一像素跳变。
+- 256 SPP 下 E3/E4 都已稳定收敛，但 E4 保持更平滑的 pixel reconstruction，未观察到明显 halo。
+- 短箱 / 长箱轮廓未出现新的 coverage hole、黑边或跨 Face bleeding。
+
+CLI：
+
+~~~bash
+./build/render_cpu 256 8 16 owen tent   # 默认
+./build/render_cpu 256 8 16 owen box    # reconstruction reference
+~~~
+
+E4 只解决 visibility/image reconstruction；A-Trous 仍然固定执行 step 1/2/4/8，Adaptive Filter Strength 属于 E5。
+
 ## 目标
 
 把 Primary Visibility 从简单的 sample count / SPP 升级为带统计语义的 Reconstruction 输入，同时正式加入 Film Reconstruction Filter。
