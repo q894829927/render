@@ -1,0 +1,52 @@
+name: CPU Smoke Test
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/CPU/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cpu-smoke.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/CPU/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cpu-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  cpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build             -DRENDER_ENABLE_CUDA=OFF             -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Run smoke render
+        run: ./build/render_cpu 2 1 4
+
+      - name: Verify outputs
+        run: |
+          test -s cornell_cpu_raw.ppm
+          test -s cornell_cpu_denoised.ppm
+          echo "CPU smoke render outputs verified."
+
+      - name: Upload render artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-smoke-render
+          path: |
+            cornell_cpu_raw.ppm
+            cornell_cpu_denoised.ppm
+          if-no-files-found: error
