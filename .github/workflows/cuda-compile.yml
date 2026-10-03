@@ -1,0 +1,39 @@
+name: CUDA Compile Test
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/CUDA/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cuda-compile.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "Core/**"
+      - "Backend/CUDA/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/cuda-compile.yml"
+  workflow_dispatch:
+
+jobs:
+  cuda-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile CUDA backend in CUDA development image
+        run: |
+          docker run --rm             -v "$PWD:/work"             -w /work             nvidia/cuda:12.6.3-devel-ubuntu22.04             bash -lc '
+              apt-get update -qq &&
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake g++ &&
+              cmake -S . -B build-cuda-ci                 -DRENDER_ENABLE_CUDA=ON                 -DCMAKE_BUILD_TYPE=Release &&
+              cmake --build build-cuda-ci --target render_cuda -j2
+            '
+
+      - name: Verify CUDA executable
+        run: test -x build-cuda-ci/render_cuda
