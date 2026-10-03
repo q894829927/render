@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
-
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -25,59 +24,41 @@ using namespace render;
 
 namespace {
 
-struct CudaRng {
-    curandStatePhilox4_32_10_t state;
-
-    __device__ CudaRng(unsigned long long seed, unsigned long long sequence) {
-        curand_init(seed, sequence, 0ULL, &state);
-    }
-
-    __device__ float NextFloat() {
-        return fminf(curand_uniform(&state), 0.99999994f);
-    }
-};
-
 __global__ void ProgressiveRenderKernel(
     PixelAccumulator* accumulation,
-    int width,
-    int height,
-    int samplesThisPass,
-    int sampleOffset,
-    int maxDepth,
-    SceneView scene,
-    Camera camera,
-    unsigned long long baseSeed)
+    int width, int height, int samplesThisPass, int sampleOffset,
+    int maxDepth, SceneView scene, Camera camera, std::uint32_t baseSeed)
 {
     int x = blockIdx.x*blockDim.x + threadIdx.x;
     int y = blockIdx.y*blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
     int idx = y*width + x;
 
-    unsigned long long passSeed = baseSeed +
-        static_cast<unsigned long long>(sampleOffset) * 0x9E3779B97F4A7C15ULL;
-    CudaRng rng(passSeed, static_cast<unsigned long long>(idx));
-
     for (int s = 0; s < samplesThisPass; ++s) {
+        std::uint32_t globalSampleIndex =
+            static_cast<std::uint32_t>(sampleOffset + s);
+        SampleGenerator samples = MakeSampleGenerator(
+            static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed);
+        Sample2DValue cameraJitter =
+            samples.Sample2D(kCameraJitterXDimension);
+
         float px =
-            (2.0f*((x+rng.NextFloat())/static_cast<float>(width))-1.0f) *
+            (2.0f*((x+cameraJitter.x)/static_cast<float>(width))-1.0f) *
             camera.viewportWidth * 0.5f;
         float py =
-            (2.0f*((y+rng.NextFloat())/static_cast<float>(height))-1.0f) *
+            (2.0f*((y+cameraJitter.y)/static_cast<float>(height))-1.0f) *
             camera.viewportHeight * 0.5f;
         Ray ray{
             camera.position,
             Normalize(camera.forward + camera.right*px + camera.up*py)
         };
         AccumulatePathSample(
-            accumulation[idx],
-            TracePath(ray, scene, maxDepth, rng));
+            accumulation[idx], TracePath(ray, scene, maxDepth, samples));
     }
 }
 
 __global__ void ResolveKernel(
-    const PixelAccumulator* accumulation,
-    ResolvedPixel* resolved,
-    int pixelCount)
+    const PixelAccumulator* accumulation, ResolvedPixel* resolved, int pixelCount)
 {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     if (i >= pixelCount) return;
@@ -86,10 +67,8 @@ __global__ void ResolveKernel(
 
 __global__ void InitializeSignalsKernel(
     const ResolvedPixel* resolved,
-    Vec3* diffuse,
-    Vec3* diffuseVariance,
-    Vec3* specular,
-    Vec3* specularVariance,
+    Vec3* diffuse, Vec3* diffuseVariance,
+    Vec3* specular, Vec3* specularVariance,
     int pixelCount)
 {
     int pixel = blockIdx.x*blockDim.x + threadIdx.x;
@@ -112,15 +91,10 @@ __global__ void InitializeSignalsKernel(
 
 __global__ void ATrousKernel(
     const ResolvedPixel* resolved,
-    const Vec3* inputColor,
-    Vec3* outputColor,
-    const Vec3* inputVariance,
-    Vec3* outputVariance,
-    DenoiseSignal signal,
-    DenoiseSettings settings,
-    int step,
-    int width,
-    int height)
+    const Vec3* inputColor, Vec3* outputColor,
+    const Vec3* inputVariance, Vec3* outputVariance,
+    DenoiseSignal signal, DenoiseSettings settings,
+    int step, int width, int height)
 {
     int x = blockIdx.x*blockDim.x + threadIdx.x;
     int y = blockIdx.y*blockDim.y + threadIdx.y;
@@ -130,18 +104,8 @@ __global__ void ATrousKernel(
     for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
         int i = LayerIndex(pixel, slot);
         FilteredSignal filtered = ATrousLayerAt(
-            resolved,
-            inputColor,
-            inputVariance,
-            pixel,
-            slot,
-            x,
-            y,
-            width,
-            height,
-            step,
-            signal,
-            settings);
+            resolved, inputColor, inputVariance,
+            pixel, slot, x, y, width, height, step, signal, settings);
         outputColor[i] = filtered.color;
         outputVariance[i] = filtered.variance;
     }
@@ -149,17 +113,12 @@ __global__ void ATrousKernel(
 
 __global__ void ComposeKernel(
     const ResolvedPixel* resolved,
-    const Vec3* diffuse,
-    const Vec3* specular,
-    Vec3* rawOut,
-    Vec3* diffuseOut,
-    Vec3* specularOut,
-    Vec3* finalOut,
+    const Vec3* diffuse, const Vec3* specular,
+    Vec3* rawOut, Vec3* diffuseOut, Vec3* specularOut, Vec3* finalOut,
     int pixelCount)
 {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     if (i >= pixelCount) return;
-
     ComposedSignals c = ComposePixel(resolved[i], diffuse, specular, i);
     rawOut[i] = c.raw;
     diffuseOut[i] = c.diffuse;
@@ -206,10 +165,8 @@ int main(int argc, char** argv) {
         sizeof(OrientedBox)*hostStorage.boxes.size(), cudaMemcpyHostToDevice));
 
     SceneView scene{
-        dRects,
-        static_cast<int>(hostStorage.rects.size()),
-        dBoxes,
-        static_cast<int>(hostStorage.boxes.size()),
+        dRects, static_cast<int>(hostStorage.rects.size()),
+        dBoxes, static_cast<int>(hostStorage.boxes.size()),
         hostStorage.light
     };
 
@@ -218,14 +175,12 @@ int main(int argc, char** argv) {
 
     PixelAccumulator* dAccumulation = Alloc<PixelAccumulator>(n);
     Zero(dAccumulation, sizeof(PixelAccumulator)*n);
-
     ResolvedPixel* dResolved = Alloc<ResolvedPixel>(n);
 
     Vec3* dDiffuseA = Alloc<Vec3>(signalCount);
     Vec3* dDiffuseB = Alloc<Vec3>(signalCount);
     Vec3* dDiffuseVarA = Alloc<Vec3>(signalCount);
     Vec3* dDiffuseVarB = Alloc<Vec3>(signalCount);
-
     Vec3* dSpecularA = Alloc<Vec3>(signalCount);
     Vec3* dSpecularB = Alloc<Vec3>(signalCount);
     Vec3* dSpecularVarA = Alloc<Vec3>(signalCount);
@@ -241,6 +196,8 @@ int main(int argc, char** argv) {
               << "\nTarget Samples: " << targetSpp
               << "\nSamples / Pass: " << samplesPerPass
               << "\nMax Depth: " << maxDepth
+              << "\nSampler: deterministic dimensioned hash"
+              << "\nSample Replicates: " << kSampleReplicateCount
               << "\nArchitecture: layered primary-surface reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
               << denoise.iterations << "\n\n";
@@ -260,7 +217,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp-accumulated);
         ProgressiveRenderKernel<<<grid,block>>>(
             dAccumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456ULL);
+            scene, camera, 123456u);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
         accumulated += pass;
@@ -291,7 +248,6 @@ int main(int argc, char** argv) {
     Vec3* diffOut = dDiffuseB;
     Vec3* diffVarIn = dDiffuseVarA;
     Vec3* diffVarOut = dDiffuseVarB;
-
     Vec3* specIn = dSpecularA;
     Vec3* specOut = dSpecularB;
     Vec3* specVarIn = dSpecularVarA;
@@ -299,17 +255,13 @@ int main(int argc, char** argv) {
 
     for (int iteration = 0; iteration < denoise.iterations; ++iteration) {
         int step = 1 << iteration;
-
         ATrousKernel<<<grid,block>>>(
             dResolved, diffIn, diffOut, diffVarIn, diffVarOut,
-            DenoiseSignal::DiffuseIllumination, denoise, step,
-            width, height);
+            DenoiseSignal::DiffuseIllumination, denoise, step, width, height);
         CUDA_CHECK(cudaGetLastError());
-
         ATrousKernel<<<grid,block>>>(
             dResolved, specIn, specOut, specVarIn, specVarOut,
-            DenoiseSignal::Specular, denoise, step,
-            width, height);
+            DenoiseSignal::Specular, denoise, step, width, height);
         CUDA_CHECK(cudaGetLastError());
 
         std::swap(diffIn, diffOut);
@@ -358,7 +310,6 @@ int main(int argc, char** argv) {
     cudaFree(dSpecularOut);
     cudaFree(dDiffuseOut);
     cudaFree(dRawOut);
-
     cudaFree(dSpecularVarB);
     cudaFree(dSpecularVarA);
     cudaFree(dSpecularB);
@@ -367,7 +318,6 @@ int main(int argc, char** argv) {
     cudaFree(dDiffuseVarA);
     cudaFree(dDiffuseB);
     cudaFree(dDiffuseA);
-
     cudaFree(dResolved);
     cudaFree(dAccumulation);
     cudaFree(dBoxes);

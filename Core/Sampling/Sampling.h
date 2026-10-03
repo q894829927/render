@@ -1,6 +1,6 @@
 #pragma once
-
 #include "Core/BSDF/BSDF.h"
+#include "Core/Sampling/SampleGenerator.h"
 #include "Core/Scene/Scene.h"
 
 namespace render {
@@ -8,7 +8,6 @@ namespace render {
 struct DirectLightingSample {
     Vec3 diffuse;
     Vec3 specular;
-
     RENDER_HD Vec3 Total() const { return diffuse + specular; }
 };
 
@@ -21,19 +20,12 @@ RENDER_HD inline float SpecularSampleProbability(const Material& mat) {
     return Clamp(0.25f + 0.75f * mat.metallic, 0.05f, 1.0f);
 }
 
-template <typename RNG>
-RENDER_DEVICE inline Vec3 SampleCosineHemisphere(const Vec3& N, RNG& rng, float& pdf) {
-    float u1 = rng.NextFloat();
-    float u2 = rng.NextFloat();
+RENDER_HD inline Vec3 SampleCosineHemisphere(
+    const Vec3& N, float u1, float u2, float& pdf)
+{
     float r = sqrtf(u1);
     float phi = 2.0f * kPi * u2;
-
-    Vec3 local(
-        r * cosf(phi),
-        r * sinf(phi),
-        sqrtf(fmaxf(0.0f, 1.0f - u1))
-    );
-
+    Vec3 local(r * cosf(phi), r * sinf(phi), sqrtf(fmaxf(0.0f, 1.0f - u1)));
     ONB basis(N);
     Vec3 wi = Normalize(basis.LocalToWorld(local));
     pdf = fmaxf(Dot(N, wi), 0.0f) / kPi;
@@ -44,13 +36,9 @@ RENDER_HD inline float DiffusePdf(const Vec3& N, const Vec3& L) {
     return fmaxf(Dot(N, L), 0.0f) / kPi;
 }
 
-template <typename RNG>
-RENDER_DEVICE inline Vec3 SampleGGXVNDF(
-    const Vec3& N,
-    const Vec3& V,
-    float roughness,
-    RNG& rng,
-    float& pdf)
+RENDER_HD inline Vec3 SampleGGXVNDF(
+    const Vec3& N, const Vec3& V, float roughness,
+    float u1, float u2, float& pdf)
 {
     ONB basis(N);
     Vec3 Ve(Dot(V, basis.t), Dot(V, basis.b), Dot(V, basis.n));
@@ -65,8 +53,6 @@ RENDER_DEVICE inline Vec3 SampleGGXVNDF(
         : Vec3(1.0f, 0.0f, 0.0f);
     Vec3 T2 = Cross(Vh, T1);
 
-    float u1 = rng.NextFloat();
-    float u2 = rng.NextFloat();
     float r = sqrtf(u1);
     float phi = 2.0f * kPi * u2;
     float t1 = r * cosf(phi);
@@ -95,10 +81,7 @@ RENDER_DEVICE inline Vec3 SampleGGXVNDF(
 }
 
 RENDER_HD inline float SpecularGGXVNDFPdf(
-    const Material& mat,
-    const Vec3& N,
-    const Vec3& V,
-    const Vec3& L)
+    const Material& mat, const Vec3& N, const Vec3& V, const Vec3& L)
 {
     float NdotL = fmaxf(Dot(N, L), 0.0f);
     float NdotV = fmaxf(Dot(N, V), 0.0f);
@@ -114,25 +97,25 @@ RENDER_HD inline float SpecularGGXVNDFPdf(
     return D * G1V / fmaxf(4.0f * NdotV, 1e-12f);
 }
 
-RENDER_HD inline float BSDFPdf(const Material& mat, const Vec3& N, const Vec3& V, const Vec3& L) {
+RENDER_HD inline float BSDFPdf(
+    const Material& mat, const Vec3& N, const Vec3& V, const Vec3& L)
+{
     if (Dot(N, L) <= 0.0f || Dot(N, V) <= 0.0f) return 0.0f;
     float pSpec = SpecularSampleProbability(mat);
-    return (1.0f - pSpec) * DiffusePdf(N, L) + pSpec * SpecularGGXVNDFPdf(mat, N, V, L);
+    return (1.0f - pSpec) * DiffusePdf(N, L) +
+           pSpec * SpecularGGXVNDFPdf(mat, N, V, L);
 }
 
-template <typename RNG>
-RENDER_DEVICE inline BsdfDirectionSample SampleBSDF(
-    const Material& mat,
-    const Vec3& N,
-    const Vec3& V,
-    RNG& rng)
+RENDER_HD inline BsdfDirectionSample SampleBSDF(
+    const Material& mat, const Vec3& N, const Vec3& V,
+    float lobeSample, float u1, float u2)
 {
     BsdfDirectionSample result;
     float ignored = 0.0f;
-    if (rng.NextFloat() < SpecularSampleProbability(mat))
-        result.direction = SampleGGXVNDF(N, V, mat.roughness, rng, ignored);
+    if (lobeSample < SpecularSampleProbability(mat))
+        result.direction = SampleGGXVNDF(N, V, mat.roughness, u1, u2, ignored);
     else
-        result.direction = SampleCosineHemisphere(N, rng, ignored);
+        result.direction = SampleCosineHemisphere(N, u1, u2, ignored);
 
     if (Dot(N, result.direction) <= 0.0f) return {};
     result.pdf = BSDFPdf(mat, N, V, result.direction);
@@ -145,14 +128,15 @@ RENDER_HD inline float PowerHeuristic(float pdfA, float pdfB) {
     return a2 / fmaxf(a2 + b2, 1e-12f);
 }
 
-template <typename RNG>
-RENDER_DEVICE inline Vec3 SampleLightPoint(const RectLight& light, RNG& rng) {
-    float u = rng.NextFloat() * 2.0f - 1.0f;
-    float v = rng.NextFloat() * 2.0f - 1.0f;
-    return light.center + light.axisU*u + light.axisV*v;
+RENDER_HD inline Vec3 SampleLightPoint(const RectLight& light, float u, float v) {
+    float su = u * 2.0f - 1.0f;
+    float sv = v * 2.0f - 1.0f;
+    return light.center + light.axisU*su + light.axisV*sv;
 }
 
-RENDER_HD inline float LightPdf(const RectLight& light, const Vec3& shadingPoint, const Vec3& wi) {
+RENDER_HD inline float LightPdf(
+    const RectLight& light, const Vec3& shadingPoint, const Vec3& wi)
+{
     LightHit lightHit;
     Ray ray{ shadingPoint + wi*kEpsilon, wi };
     if (!HitRectLight(light, ray, kEpsilon, kInf, lightHit)) return 0.0f;
@@ -164,17 +148,18 @@ RENDER_HD inline float LightPdf(const RectLight& light, const Vec3& shadingPoint
     return dist2 / fmaxf(cosLight * light.Area(), 1e-12f);
 }
 
-template <typename RNG>
-RENDER_DEVICE inline DirectLightingSample EstimateDirectMIS(
-    const HitRecord& hit,
-    const Vec3& V,
-    const SceneView& scene,
-    RNG& rng)
+RENDER_HD inline DirectLightingSample EstimateDirectMIS(
+    const HitRecord& hit, const Vec3& V, const SceneView& scene,
+    const SampleGenerator& samples, int bounce)
 {
     DirectLightingSample direct{};
 
     {
-        Vec3 lightPoint = SampleLightPoint(scene.light, rng);
+        float lightU = samples.Sample1D(
+            BounceSampleDimension(bounce, BounceSampleOffset::LightU));
+        float lightV = samples.Sample1D(
+            BounceSampleDimension(bounce, BounceSampleOffset::LightV));
+        Vec3 lightPoint = SampleLightPoint(scene.light, lightU, lightV);
         Vec3 toLight = lightPoint - hit.position;
         float dist2 = LengthSquared(toLight);
         float dist = sqrtf(dist2);
@@ -197,7 +182,12 @@ RENDER_DEVICE inline DirectLightingSample EstimateDirectMIS(
     }
 
     {
-        BsdfDirectionSample bs = SampleBSDF(hit.material, hit.normal, V, rng);
+        BsdfDirectionSample bs = SampleBSDF(
+            hit.material, hit.normal, V,
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::DirectBsdfLobe)),
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::DirectBsdfU)),
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::DirectBsdfV)));
+
         Vec3 L = bs.direction;
         float NdotL = fmaxf(Dot(hit.normal, L), 0.0f);
         if (bs.pdf > 1e-12f && NdotL > 0.0f) {
@@ -205,7 +195,8 @@ RENDER_DEVICE inline DirectLightingSample EstimateDirectMIS(
             LightHit lightHit;
             if (HitRectLight(scene.light, sampledRay, kEpsilon, kInf, lightHit)) {
                 HitRecord blocker;
-                bool blocked = HitScene(scene, sampledRay, kEpsilon, lightHit.t - kEpsilon, blocker);
+                bool blocked = HitScene(
+                    scene, sampledRay, kEpsilon, lightHit.t - kEpsilon, blocker);
                 if (!blocked) {
                     float lightPdf = LightPdf(scene.light, hit.position, L);
                     BRDFLobes f = EvaluateBRDFLobes(hit.material, hit.normal, V, L);

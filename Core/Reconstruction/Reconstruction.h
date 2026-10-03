@@ -1,8 +1,7 @@
 #pragma once
-
 #include <cstdint>
-
 #include "Core/Integrator/PathSample.h"
+#include "Core/Sampling/SampleGenerator.h"
 
 namespace render {
 
@@ -34,6 +33,22 @@ struct ColorMoments {
     }
 };
 
+struct ReplicateSignalAccumulator {
+    Vec3 rawSum;
+    Vec3 diffuseSum;
+    Vec3 specularSum;
+    Vec3 emissionSum;
+    unsigned int sampleCount = 0;
+
+    RENDER_HD void Add(const PathSample& sample) {
+        rawSum += sample.Total();
+        diffuseSum += sample.diffuse;
+        specularSum += sample.specular;
+        emissionSum += sample.emission;
+        ++sampleCount;
+    }
+};
+
 struct SurfaceLayerAccumulator {
     std::uint32_t primitiveId = kInvalidPrimitiveId;
     unsigned int count = 0;
@@ -53,6 +68,7 @@ struct SurfaceLayerAccumulator {
 struct PixelAccumulator {
     ColorMoments raw;
     SurfaceLayerAccumulator layers[kPrimarySurfaceSlots];
+    ReplicateSignalAccumulator replicates[kSampleReplicateCount];
     Vec3 overflowSum;
     unsigned int sampleCount = 0;
 };
@@ -103,6 +119,9 @@ RENDER_HD inline void AccumulatePathSample(PixelAccumulator& pixel, const PathSa
     pixel.raw.Add(total);
     ++pixel.sampleCount;
 
+    if (sample.replicateId < kSampleReplicateCount)
+        pixel.replicates[sample.replicateId].Add(sample);
+
     if (!sample.primary.valid) {
         pixel.overflowSum += total;
         return;
@@ -110,9 +129,6 @@ RENDER_HD inline void AccumulatePathSample(PixelAccumulator& pixel, const PathSa
 
     int slot = FindOrCreateLayer(pixel, sample.primary.primitiveId);
     if (slot < 0) {
-        // More than four distinct primary surfaces inside one pixel footprint.
-        // Preserve unbiased energy as an unfiltered residual rather than
-        // inventing a mixed guide surface.
         pixel.overflowSum += total;
         return;
     }
@@ -126,7 +142,8 @@ RENDER_HD inline void AccumulatePathSample(PixelAccumulator& pixel, const PathSa
     layer.roughnessSum += sample.primary.roughness;
     layer.metallicSum += sample.primary.metallic;
 
-    Vec3 diffuseIllumination = SafeDivideColor(sample.diffuse, sample.primary.albedo);
+    Vec3 diffuseIllumination =
+        SafeDivideColor(sample.diffuse, sample.primary.albedo);
     layer.diffuseIllumination.Add(diffuseIllumination);
     layer.specular.Add(sample.specular);
     layer.emissionSum += sample.emission;
@@ -165,8 +182,8 @@ RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
         dst.guide.depth = src.depthSum * inv;
         dst.guide.roughness = src.roughnessSum * inv;
         dst.guide.metallic = src.metallicSum * inv;
-        dst.guide.coverage = static_cast<float>(src.count) /
-                             static_cast<float>(pixel.sampleCount);
+        dst.guide.coverage =
+            static_cast<float>(src.count) / static_cast<float>(pixel.sampleCount);
 
         dst.diffuseIllumination = Mean(src.diffuseIllumination, src.count);
         dst.diffuseVariance = VarianceOfMean(src.diffuseIllumination, src.count);
@@ -179,8 +196,7 @@ RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
 }
 
 RENDER_HD inline int FindResolvedLayer(
-    const ResolvedPixel& pixel,
-    std::uint32_t primitiveId)
+    const ResolvedPixel& pixel, std::uint32_t primitiveId)
 {
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         if (pixel.layers[i].valid &&

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -16,37 +17,6 @@
 using namespace render;
 
 namespace {
-
-struct CpuRng {
-    std::uint64_t state = 1;
-
-    static std::uint64_t SplitMix64(std::uint64_t& x) {
-        std::uint64_t z = (x += 0x9E3779B97F4A7C15ULL);
-        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-        return z ^ (z >> 31);
-    }
-
-    void Init(std::uint64_t seed, std::uint64_t sequence) {
-        std::uint64_t x = seed ^ (sequence + 0x9E3779B97F4A7C15ULL);
-        state = SplitMix64(x);
-        if (state == 0) state = 0x853C49E6748FEA9BULL;
-    }
-
-    std::uint64_t Next64() {
-        std::uint64_t x = state;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        state = x;
-        return x * 0x2545F4914F6CDD1DULL;
-    }
-
-    float NextFloat() {
-        std::uint32_t bits = static_cast<std::uint32_t>(Next64() >> 40);
-        return static_cast<float>(bits) * (1.0f / 16777216.0f);
-    }
-};
 
 template <typename Fn>
 void ParallelForRows(int height, unsigned workers, Fn&& fn) {
@@ -68,41 +38,34 @@ void ParallelForRows(int height, unsigned workers, Fn&& fn) {
 
 void ProgressivePass(
     std::vector<PixelAccumulator>& accumulation,
-    int width,
-    int height,
-    int samplesThisPass,
-    int sampleOffset,
-    int maxDepth,
-    const SceneView& scene,
-    const Camera& camera,
-    std::uint64_t baseSeed,
-    unsigned workers)
+    int width, int height, int samplesThisPass, int sampleOffset,
+    int maxDepth, const SceneView& scene, const Camera& camera,
+    std::uint32_t baseSeed, unsigned workers)
 {
-    const std::uint64_t passSeed = baseSeed +
-        static_cast<std::uint64_t>(sampleOffset) * 0x9E3779B97F4A7C15ULL;
-
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
             int idx = y * width + x;
-            CpuRng rng;
-            rng.Init(passSeed, static_cast<std::uint64_t>(idx));
-
             for (int s = 0; s < samplesThisPass; ++s) {
+                std::uint32_t globalSampleIndex =
+                    static_cast<std::uint32_t>(sampleOffset + s);
+                SampleGenerator samples = MakeSampleGenerator(
+                    static_cast<std::uint32_t>(idx), globalSampleIndex, baseSeed);
+                Sample2DValue cameraJitter =
+                    samples.Sample2D(kCameraJitterXDimension);
+
                 float px =
-                    (2.0f * ((x + rng.NextFloat()) / static_cast<float>(width)) - 1.0f) *
+                    (2.0f * ((x + cameraJitter.x) / static_cast<float>(width)) - 1.0f) *
                     camera.viewportWidth * 0.5f;
                 float py =
-                    (2.0f * ((y + rng.NextFloat()) / static_cast<float>(height)) - 1.0f) *
+                    (2.0f * ((y + cameraJitter.y) / static_cast<float>(height)) - 1.0f) *
                     camera.viewportHeight * 0.5f;
 
                 Ray ray{
                     camera.position,
                     Normalize(camera.forward + camera.right*px + camera.up*py)
                 };
-
                 AccumulatePathSample(
-                    accumulation[idx],
-                    TracePath(ray, scene, maxDepth, rng));
+                    accumulation[idx], TracePath(ray, scene, maxDepth, samples));
             }
         }
     });
@@ -110,13 +73,9 @@ void ProgressivePass(
 
 void InitializeSignals(
     const std::vector<ResolvedPixel>& resolved,
-    std::vector<Vec3>& diffuse,
-    std::vector<Vec3>& diffuseVariance,
-    std::vector<Vec3>& specular,
-    std::vector<Vec3>& specularVariance,
-    int width,
-    int height,
-    unsigned workers)
+    std::vector<Vec3>& diffuse, std::vector<Vec3>& diffuseVariance,
+    std::vector<Vec3>& specular, std::vector<Vec3>& specularVariance,
+    int width, int height, unsigned workers)
 {
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
@@ -140,16 +99,10 @@ void InitializeSignals(
 
 void DenoisePass(
     const std::vector<ResolvedPixel>& resolved,
-    const std::vector<Vec3>& inputColor,
-    std::vector<Vec3>& outputColor,
-    const std::vector<Vec3>& inputVariance,
-    std::vector<Vec3>& outputVariance,
-    DenoiseSignal signal,
-    const DenoiseSettings& settings,
-    int step,
-    int width,
-    int height,
-    unsigned workers)
+    const std::vector<Vec3>& inputColor, std::vector<Vec3>& outputColor,
+    const std::vector<Vec3>& inputVariance, std::vector<Vec3>& outputVariance,
+    DenoiseSignal signal, const DenoiseSettings& settings,
+    int step, int width, int height, unsigned workers)
 {
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
@@ -157,23 +110,29 @@ void DenoisePass(
             for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
                 int i = LayerIndex(pixel, slot);
                 FilteredSignal filtered = ATrousLayerAt(
-                    resolved.data(),
-                    inputColor.data(),
-                    inputVariance.data(),
-                    pixel,
-                    slot,
-                    x,
-                    y,
-                    width,
-                    height,
-                    step,
-                    signal,
-                    settings);
+                    resolved.data(), inputColor.data(), inputVariance.data(),
+                    pixel, slot, x, y, width, height, step, signal, settings);
                 outputColor[i] = filtered.color;
                 outputVariance[i] = filtered.variance;
             }
         }
     });
+}
+
+std::uint64_t HashLinearBuffer(const std::vector<Vec3>& values) {
+    constexpr std::uint64_t kOffset = 1469598103934665603ULL;
+    constexpr std::uint64_t kPrime = 1099511628211ULL;
+    std::uint64_t hash = kOffset;
+    for (const Vec3& value : values) {
+        const float channels[3] = {value.x, value.y, value.z};
+        for (float channel : channels) {
+            std::uint32_t bits = 0u;
+            std::memcpy(&bits, &channel, sizeof(bits));
+            hash ^= bits;
+            hash *= kPrime;
+        }
+    }
+    return hash;
 }
 
 } // namespace
@@ -196,6 +155,8 @@ int main(int argc, char** argv) {
               << "\nTarget Samples: " << targetSpp
               << "\nSamples / Pass: " << samplesPerPass
               << "\nMax Depth: " << maxDepth
+              << "\nSampler: deterministic dimensioned hash"
+              << "\nSample Replicates: " << kSampleReplicateCount
               << "\nArchitecture: layered primary-surface reconstruction"
               << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
               << denoise.iterations << "\n\n";
@@ -209,7 +170,7 @@ int main(int argc, char** argv) {
         int pass = std::min(samplesPerPass, targetSpp - accumulated);
         ProgressivePass(
             accumulation, width, height, pass, accumulated, maxDepth,
-            scene, camera, 123456ULL, workers);
+            scene, camera, 123456u, workers);
         accumulated += pass;
         std::cout << "\rAccumulating: " << accumulated << '/' << targetSpp
                   << " SPP" << std::flush;
@@ -240,7 +201,6 @@ int main(int argc, char** argv) {
     auto* diffOut = &diffuseB;
     auto* diffVarIn = &diffuseVarA;
     auto* diffVarOut = &diffuseVarB;
-
     auto* specIn = &specularA;
     auto* specOut = &specularB;
     auto* specVarIn = &specularVarA;
@@ -248,7 +208,6 @@ int main(int argc, char** argv) {
 
     for (int iteration = 0; iteration < denoise.iterations; ++iteration) {
         int step = 1 << iteration;
-
         DenoisePass(
             resolved, *diffIn, *diffOut, *diffVarIn, *diffVarOut,
             DenoiseSignal::DiffuseIllumination, denoise, step,
@@ -291,6 +250,11 @@ int main(int argc, char** argv) {
 
     std::cout << "\nRender time: " << renderMs
               << " ms\nDenoise time: " << denoiseMs
-              << " ms\nSaved: raw / diffuse / specular / final\n";
+              << " ms\nLinear hashes:"
+              << " raw=" << HashLinearBuffer(raw)
+              << " diffuse=" << HashLinearBuffer(diffuse)
+              << " specular=" << HashLinearBuffer(specular)
+              << " final=" << HashLinearBuffer(finalColor)
+              << "\nSaved: raw / diffuse / specular / final\n";
     return 0;
 }

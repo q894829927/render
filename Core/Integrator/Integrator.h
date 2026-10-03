@@ -1,18 +1,16 @@
 #pragma once
-
 #include "Core/Integrator/PathSample.h"
 #include "Core/Sampling/Sampling.h"
 
 namespace render {
 
-template <typename RNG>
 RENDER_DEVICE inline PathSample TracePath(
-    Ray ray,
-    const SceneView& scene,
-    int maxDepth,
-    RNG& rng)
+    Ray ray, const SceneView& scene, int maxDepth,
+    const SampleGenerator& samples)
 {
     PathSample result{};
+    result.replicateId = samples.replicateId;
+
     Vec3 diffuseThroughput(0.0f);
     Vec3 specularThroughput(0.0f);
 
@@ -31,8 +29,6 @@ RENDER_DEVICE inline PathSample TracePath(
                 result.primary.primitiveId = kLightPrimitiveId;
                 result.primary.valid = 1;
             }
-            // Light reached after a BSDF bounce is already represented by the
-            // two-technique direct-light MIS estimator at the previous surface.
             break;
         }
 
@@ -48,7 +44,7 @@ RENDER_DEVICE inline PathSample TracePath(
         }
 
         Vec3 V = Normalize(-ray.direction);
-        DirectLightingSample direct = EstimateDirectMIS(hit, V, scene, rng);
+        DirectLightingSample direct = EstimateDirectMIS(hit, V, scene, samples, bounce);
 
         if (bounce == 0) {
             result.diffuse += direct.diffuse;
@@ -59,11 +55,18 @@ RENDER_DEVICE inline PathSample TracePath(
             result.specular += specularThroughput * localDirect;
         }
 
-        BsdfDirectionSample bs = SampleBSDF(hit.material, hit.normal, V, rng);
+        BsdfDirectionSample bs = SampleBSDF(
+            hit.material, hit.normal, V,
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::PathBsdfLobe)),
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::PathBsdfU)),
+            samples.Sample1D(BounceSampleDimension(bounce, BounceSampleOffset::PathBsdfV)));
+
         float cosTheta = fmaxf(Dot(hit.normal, bs.direction), 0.0f);
         if (bs.pdf <= 1e-12f || cosTheta <= 0.0f) break;
 
-        BRDFLobes f = EvaluateBRDFLobes(hit.material, hit.normal, V, bs.direction);
+        BRDFLobes f = EvaluateBRDFLobes(
+            hit.material, hit.normal, V, bs.direction);
+
         if (bounce == 0) {
             diffuseThroughput = f.diffuse * (cosTheta / bs.pdf);
             specularThroughput = f.specular * (cosTheta / bs.pdf);
@@ -74,15 +77,19 @@ RENDER_DEVICE inline PathSample TracePath(
         }
 
         Vec3 totalThroughput = diffuseThroughput + specularThroughput;
+
         if (bounce >= kRussianRouletteStartBounce) {
             float survive = Clamp(MaxComponent(totalThroughput), 0.05f, 0.95f);
-            if (rng.NextFloat() > survive) break;
+            float rrSample = samples.Sample1D(
+                BounceSampleDimension(bounce, BounceSampleOffset::RussianRoulette));
+            if (rrSample > survive) break;
             diffuseThroughput = diffuseThroughput / survive;
             specularThroughput = specularThroughput / survive;
             totalThroughput = diffuseThroughput + specularThroughput;
         }
 
-        if (!IsFinite(totalThroughput) || MaxComponent(totalThroughput) <= 1e-8f) break;
+        if (!IsFinite(totalThroughput) || MaxComponent(totalThroughput) <= 1e-8f)
+            break;
 
         ray.origin = hit.position + hit.normal * kEpsilon;
         ray.direction = bs.direction;

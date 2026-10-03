@@ -1,7 +1,5 @@
 #pragma once
-
 #include <cstdint>
-
 #include "Core/Scene/Scene.h"
 
 namespace render {
@@ -21,6 +19,7 @@ struct PathSample {
     Vec3 specular;
     Vec3 emission;
     PrimarySurfaceSample primary;
+    std::uint32_t replicateId = 0u;
 
     RENDER_HD Vec3 Total() const {
         return diffuse + specular + emission;

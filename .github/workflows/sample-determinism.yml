@@ -1,0 +1,76 @@
+name: Sample Determinism
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "Core/Sampling/**"
+      - "Core/Integrator/**"
+      - "Core/Reconstruction/**"
+      - "Backend/CPU/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/sample-determinism.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "Core/Sampling/**"
+      - "Core/Integrator/**"
+      - "Core/Reconstruction/**"
+      - "Backend/CPU/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/sample-determinism.yml"
+  workflow_dispatch:
+
+jobs:
+  samples-per-pass-invariance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CPU renderer
+        run: |
+          cmake -S . -B build \
+            -DRENDER_ENABLE_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Render identical 64 SPP sample sets with different pass sizes
+        run: |
+          set -euo pipefail
+          mkdir -p determinism
+          for pass in 1 2 4 8 16; do
+            echo "=== 64 SPP / samplesPerPass=${pass} ==="
+            ./build/render_cpu 64 "${pass}" 8 > "determinism/pass-${pass}.log"
+            grep '^Linear hashes:' "determinism/pass-${pass}.log" \
+              > "determinism/pass-${pass}.hash"
+            for signal in raw diffuse specular final; do
+              cp "cornell_cpu_${signal}.ppm" \
+                "determinism/pass-${pass}_${signal}.ppm"
+            done
+          done
+
+      - name: Verify samplesPerPass invariance
+        run: |
+          set -euo pipefail
+          for pass in 2 4 8 16; do
+            cmp "determinism/pass-1.hash" "determinism/pass-${pass}.hash"
+            for signal in raw diffuse specular final; do
+              cmp \
+                "determinism/pass-1_${signal}.ppm" \
+                "determinism/pass-${pass}_${signal}.ppm"
+            done
+          done
+          echo "samplesPerPass invariance verified for 1/2/4/8/16."
+
+      - name: Upload determinism logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-determinism-debug
+          path: determinism/
+          if-no-files-found: ignore
