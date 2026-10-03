@@ -11,15 +11,35 @@ enum class DenoiseSignal : int {
 
 struct DenoiseSettings {
     int iterations = 4;
+
     float phiColorDiffuse = 3.0f;
     float phiColorSpecular = 2.5f;
     float phiDepth = 0.020f;
     float phiCoverage = 0.20f;
     float phiAlbedo = 0.25f;
     float phiRoughness = 0.20f;
+
     float diffuseNormalPower = 8.0f;
     float specularNormalPowerMin = 12.0f;
     float specularNormalPowerMax = 64.0f;
+
+    // E5 adaptive filtering controls. These operate on the variance of the
+    // reconstructed mean, not on per-path IID variance.
+    float adaptiveNoiseThresholdDiffuse = 0.12f;
+    float adaptiveNoiseThresholdSpecular = 0.16f;
+    float adaptiveSignalFloorDiffuse = 0.05f;
+    float adaptiveSignalFloorSpecular = 0.02f;
+    float adaptiveSampleTarget = 64.0f;
+    float adaptiveLowSampleBoost = 0.50f;
+    float adaptiveGeometryFloor = 0.15f;
+    float adaptiveCoverageFloor = 0.25f;
+    float adaptiveSpecularMinRadiusFactor = 0.15f;
+};
+
+struct AdaptiveFilterDecision {
+    float filterStrength = 0.0f;
+    float geometryConfidence = 0.0f;
+    float noiseConfidence = 0.0f;
 };
 
 RENDER_HD inline float SurfaceIdentityCompatibilityWeight(
@@ -40,7 +60,7 @@ RENDER_HD inline float SurfaceIdentityCompatibilityWeight(
     return 0.35f;
 }
 
-RENDER_HD inline float SurfaceGuideWeight(
+RENDER_HD inline float SurfaceGeometryWeight(
     const SurfaceGuide& center,
     const SurfaceGuide& sample,
     const DenoiseSettings& settings,
@@ -50,22 +70,13 @@ RENDER_HD inline float SurfaceGuideWeight(
         SurfaceIdentityCompatibilityWeight(
             center.identity,
             sample.identity);
-    if (identityWeight <= 0.0f) return 0.0f;
-
-    float coverageWeight = expf(
-        -fabsf(sample.coverage - center.coverage) /
-        fmaxf(settings.phiCoverage, 1e-5f));
-
-    float coverageConfidence =
-        fminf(
-            center.coverageConfidence,
-            sample.coverageConfidence);
-    float coverageConfidenceWeight =
-        0.35f + 0.65f * Saturate(coverageConfidence);
+    if (identityWeight <= 0.0f)
+        return 0.0f;
 
     bool centerFinite = IsFinite(center.depth);
     bool sampleFinite = IsFinite(sample.depth);
-    if (centerFinite != sampleFinite) return 0.0f;
+    if (centerFinite != sampleFinite)
+        return 0.0f;
 
     float depthWeight = 1.0f;
     if (centerFinite && sampleFinite) {
@@ -83,6 +94,7 @@ RENDER_HD inline float SurfaceGuideWeight(
 
     float normalDot =
         Saturate(Dot(center.normal, sample.normal));
+
     float normalPower =
         settings.diffuseNormalPower;
     if (signal == DenoiseSignal::Specular) {
@@ -94,6 +106,7 @@ RENDER_HD inline float SurfaceGuideWeight(
              settings.specularNormalPowerMin) *
             smoothness;
     }
+
     float normalWeight =
         powf(normalDot, normalPower);
 
@@ -115,12 +128,44 @@ RENDER_HD inline float SurfaceGuideWeight(
     }
 
     return identityWeight *
-           coverageWeight *
-           coverageConfidenceWeight *
            depthWeight *
            normalWeight *
            albedoWeight *
            roughnessWeight;
+}
+
+RENDER_HD inline float SurfaceGuideWeight(
+    const SurfaceGuide& center,
+    const SurfaceGuide& sample,
+    const DenoiseSettings& settings,
+    DenoiseSignal signal)
+{
+    float geometryWeight =
+        SurfaceGeometryWeight(
+            center,
+            sample,
+            settings,
+            signal);
+    if (geometryWeight <= 0.0f)
+        return 0.0f;
+
+    float coverageWeight = expf(
+        -fabsf(sample.coverage - center.coverage) /
+        fmaxf(settings.phiCoverage, 1e-5f));
+
+    float coverageConfidence =
+        fminf(
+            center.coverageConfidence,
+            sample.coverageConfidence);
+
+    float coverageConfidenceWeight =
+        settings.adaptiveCoverageFloor +
+        (1.0f - settings.adaptiveCoverageFloor) *
+        Saturate(coverageConfidence);
+
+    return geometryWeight *
+           coverageWeight *
+           coverageConfidenceWeight;
 }
 
 RENDER_HD inline int FindBestDenoiseLayer(
@@ -132,10 +177,14 @@ RENDER_HD inline int FindBestDenoiseLayer(
     int bestSlot = -1;
     float bestWeight = 0.0f;
 
-    for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
+    for (int slot = 0;
+         slot < kPrimarySurfaceSlots;
+         ++slot)
+    {
         const ResolvedLayer& layer =
             pixel.layers[slot];
-        if (!layer.valid) continue;
+        if (!layer.valid)
+            continue;
 
         float weight =
             SurfaceGuideWeight(
@@ -143,6 +192,7 @@ RENDER_HD inline int FindBestDenoiseLayer(
                 layer.guide,
                 settings,
                 signal);
+
         if (weight > bestWeight) {
             bestWeight = weight;
             bestSlot = slot;
@@ -178,6 +228,118 @@ RENDER_HD inline float VarianceAwareColorWeight(
     return expf(
         -normalizedDistance /
         fmaxf(phi, 1e-5f));
+}
+
+RENDER_HD inline float SignalRms(const Vec3& value) {
+    return sqrtf(
+        fmaxf(
+            (value.x*value.x +
+             value.y*value.y +
+             value.z*value.z) / 3.0f,
+            0.0f));
+}
+
+RENDER_HD inline float StandardErrorRms(
+    const Vec3& variance)
+{
+    return sqrtf(
+        fmaxf(
+            (variance.x +
+             variance.y +
+             variance.z) / 3.0f,
+            0.0f));
+}
+
+RENDER_HD inline AdaptiveFilterDecision
+ComputeAdaptiveFilterDecision(
+    const SurfaceGuide& guide,
+    const Vec3& color,
+    const Vec3& variance,
+    float geometryConfidence,
+    int step,
+    DenoiseSignal signal,
+    const DenoiseSettings& settings)
+{
+    AdaptiveFilterDecision decision{};
+
+    decision.geometryConfidence =
+        Saturate(geometryConfidence);
+
+    float signalFloor =
+        signal == DenoiseSignal::DiffuseIllumination
+            ? settings.adaptiveSignalFloorDiffuse
+            : settings.adaptiveSignalFloorSpecular;
+
+    float threshold =
+        signal == DenoiseSignal::DiffuseIllumination
+            ? settings.adaptiveNoiseThresholdDiffuse
+            : settings.adaptiveNoiseThresholdSpecular;
+
+    float relativeNoise =
+        StandardErrorRms(variance) /
+        fmaxf(
+            SignalRms(color) + signalFloor,
+            1e-5f);
+
+    float sampleConfidence =
+        Saturate(
+            static_cast<float>(
+                guide.primarySampleCount) /
+            fmaxf(
+                settings.adaptiveSampleTarget,
+                1.0f));
+
+    float sampleScarcity =
+        1.0f - sampleConfidence;
+
+    float scarcityBoost =
+        1.0f +
+        settings.adaptiveLowSampleBoost *
+        sampleScarcity;
+
+    // Wider A-Trous radii require progressively stronger evidence that the
+    // signal is still noisy. This makes later iterations naturally fade out.
+    float radiusThresholdScale =
+        sqrtf(
+            static_cast<float>(
+                step > 0 ? step : 1));
+
+    decision.noiseConfidence =
+        Saturate(
+            relativeNoise *
+            scarcityBoost /
+            fmaxf(
+                threshold *
+                radiusThresholdScale,
+                1e-5f));
+
+    float geometryFactor =
+        settings.adaptiveGeometryFloor +
+        (1.0f - settings.adaptiveGeometryFloor) *
+        decision.geometryConfidence;
+
+    float coverageFactor =
+        settings.adaptiveCoverageFloor +
+        (1.0f - settings.adaptiveCoverageFloor) *
+        Saturate(guide.coverageConfidence);
+
+    float signalRadiusFactor = 1.0f;
+    if (signal == DenoiseSignal::Specular) {
+        signalRadiusFactor =
+            settings.adaptiveSpecularMinRadiusFactor +
+            (1.0f -
+             settings.adaptiveSpecularMinRadiusFactor) *
+            Saturate(guide.roughness);
+    }
+
+    decision.filterStrength =
+        Saturate(
+            decision.noiseConfidence *
+            geometryFactor *
+            coverageFactor *
+            signalRadiusFactor);
+
+    return decision;
 }
 
 } // namespace render

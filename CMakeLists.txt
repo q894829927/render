@@ -31,6 +31,12 @@ add_executable(reconstruction_test
 target_include_directories(reconstruction_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME reconstruction COMMAND reconstruction_test)
 
+add_executable(adaptive_denoiser_test
+    Tests/AdaptiveDenoiserTest.cpp
+)
+target_include_directories(adaptive_denoiser_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME adaptive_denoiser COMMAND adaptive_denoiser_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()

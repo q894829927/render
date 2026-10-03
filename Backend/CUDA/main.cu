@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
                     ? "Tent"
                     : "Box")
               << "\nArchitecture: visibility-aware image reconstruction"
-              << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
+              << "\nDenoiser: adaptive diffuse/specular A-Trous x"
               << denoise.iterations << "\n\n";
 
     dim3 block(16,16);

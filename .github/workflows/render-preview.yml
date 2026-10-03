@@ -43,8 +43,8 @@ jobs:
           mkdir -p validation
           for spp in 16 64 256; do
             echo "=== Rendering ${spp} SPP ==="
-            ./build/render_cpu "${spp}" 8 16
             mkdir -p "validation/${spp}spp"
+            ./build/render_cpu "${spp}" 8 16 | tee "validation/${spp}spp/render.log"
             python3 scripts/ppm_to_png.py \
               --output-dir "validation/${spp}spp" \
               cornell_cpu_raw.ppm \
@@ -52,6 +52,36 @@ jobs:
               cornell_cpu_specular.ppm \
               cornell_cpu_final.ppm
           done
+
+      - name: Verify adaptive strength responds to SPP
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          def first_strength(spp, signal):
+              text = Path(f"validation/{spp}spp/render.log").read_text()
+              match = re.search(
+                  rf"Adaptive A-Trous iteration 0 step=1 .*?{signal}Strength=([0-9.eE+-]+)",
+                  text,
+              )
+              if not match:
+                  raise SystemExit(f"missing {signal} adaptive strength for {spp} SPP")
+              return float(match.group(1))
+
+          d16 = first_strength(16, "diffuse")
+          d256 = first_strength(256, "diffuse")
+          s16 = first_strength(16, "specular")
+          s256 = first_strength(256, "specular")
+
+          print(f"diffuse: 16={d16:.6f}, 256={d256:.6f}")
+          print(f"specular: 16={s16:.6f}, 256={s256:.6f}")
+
+          if not d16 > d256:
+              raise SystemExit("diffuse adaptive strength did not decrease with SPP")
+          if not s16 > s256:
+              raise SystemExit("specular adaptive strength did not decrease with SPP")
+          PY
 
       - name: Verify validation PNGs
         run: |

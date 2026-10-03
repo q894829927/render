@@ -105,7 +105,9 @@ void DenoisePass(
     const std::vector<Vec3>& inputColor, std::vector<Vec3>& outputColor,
     const std::vector<Vec3>& inputVariance, std::vector<Vec3>& outputVariance,
     DenoiseSignal signal, const DenoiseSettings& settings,
-    int step, int width, int height, unsigned workers)
+    int step, int width, int height,
+    std::vector<float>& filterStrength,
+    unsigned workers)
 {
     ParallelForRows(height, workers, [&](int y) {
         for (int x = 0; x < width; ++x) {
@@ -117,9 +119,43 @@ void DenoisePass(
                     pixel, slot, x, y, width, height, step, signal, settings);
                 outputColor[i] = filtered.color;
                 outputVariance[i] = filtered.variance;
+                filterStrength[i] =
+                    filtered.filterStrength;
             }
         }
     });
+}
+
+float MeanValidFilterStrength(
+    const std::vector<ResolvedPixel>& resolved,
+    const std::vector<float>& strength)
+{
+    double sum = 0.0;
+    std::size_t count = 0;
+
+    for (std::size_t pixel = 0;
+         pixel < resolved.size();
+         ++pixel)
+    {
+        for (int slot = 0;
+             slot < kPrimarySurfaceSlots;
+             ++slot)
+        {
+            if (!resolved[pixel].layers[slot].valid)
+                continue;
+
+            sum += strength[
+                LayerIndex(
+                    static_cast<int>(pixel),
+                    slot)];
+            ++count;
+        }
+    }
+
+    return count > 0
+        ? static_cast<float>(
+            sum / static_cast<double>(count))
+        : 0.0f;
 }
 
 std::uint64_t HashLinearBuffer(const std::vector<Vec3>& values) {
@@ -200,7 +236,7 @@ int main(int argc, char** argv) {
                     ? "Tent"
                     : "Box")
               << "\nArchitecture: visibility-aware image reconstruction"
-              << "\nDenoiser: diffuse/specular variance-guided A-Trous x"
+              << "\nDenoiser: adaptive diffuse/specular A-Trous x"
               << denoise.iterations << "\n\n";
 
     std::size_t n = static_cast<std::size_t>(width) * height;
@@ -232,6 +268,8 @@ int main(int argc, char** argv) {
     std::vector<Vec3> diffuseVarA(signalCount), diffuseVarB(signalCount);
     std::vector<Vec3> specularA(signalCount), specularB(signalCount);
     std::vector<Vec3> specularVarA(signalCount), specularVarB(signalCount);
+    std::vector<float> diffuseStrength(signalCount, 0.0f);
+    std::vector<float> specularStrength(signalCount, 0.0f);
 
     InitializeSignals(
         resolved, diffuseA, diffuseVarA, specularA, specularVarA,
@@ -253,11 +291,24 @@ int main(int argc, char** argv) {
         DenoisePass(
             resolved, *diffIn, *diffOut, *diffVarIn, *diffVarOut,
             DenoiseSignal::DiffuseIllumination, denoise, step,
-            width, height, workers);
+            width, height, diffuseStrength, workers);
         DenoisePass(
             resolved, *specIn, *specOut, *specVarIn, *specVarOut,
             DenoiseSignal::Specular, denoise, step,
-            width, height, workers);
+            width, height, specularStrength, workers);
+
+        std::cout
+            << "\nAdaptive A-Trous iteration "
+            << iteration
+            << " step=" << step
+            << " diffuseStrength="
+            << MeanValidFilterStrength(
+                resolved,
+                diffuseStrength)
+            << " specularStrength="
+            << MeanValidFilterStrength(
+                resolved,
+                specularStrength);
 
         std::swap(diffIn, diffOut);
         std::swap(diffVarIn, diffVarOut);
