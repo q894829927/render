@@ -6,44 +6,64 @@ SAMPLES_PER_PASS="${2:-8}"
 MAX_DEPTH="${3:-16}"
 BUILD_DIR="${BUILD_DIR:-build-camber}"
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+if [[ -f "$ROOT_DIR/.camber_toolchain.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.camber_toolchain.env"
+fi
+
+CMAKE_BIN="${CAMBER_CMAKE:-$(command -v cmake || true)}"
+NVCC_BIN="${CAMBER_NVCC:-$(command -v nvcc || true)}"
+CXX_BIN="${CAMBER_CXX:-$(command -v g++ || true)}"
+
+if [[ -z "$CXX_BIN" && -x /opt/conda/bin/x86_64-conda-linux-gnu-g++ ]]; then
+  CXX_BIN=/opt/conda/bin/x86_64-conda-linux-gnu-g++
+fi
+if [[ -z "$CMAKE_BIN" && -x /opt/conda/bin/cmake ]]; then
+  CMAKE_BIN=/opt/conda/bin/cmake
+fi
+if [[ -z "$NVCC_BIN" && -x /opt/conda/bin/nvcc ]]; then
+  NVCC_BIN=/opt/conda/bin/nvcc
+fi
+
 echo "== Camber GPU environment check =="
 echo "Host: $(hostname)"
-echo
 
-for tool in git cmake g++; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "ERROR: required tool '$tool' was not found in PATH."
-    exit 2
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "ERROR: nvidia-smi not found. Connect to a GPU Xsmall environment."
+  exit 3
+fi
+nvidia-smi
+
+for pair in "cmake:$CMAKE_BIN" "nvcc:$NVCC_BIN" "g++:$CXX_BIN"; do
+  name="${pair%%:*}"
+  path="${pair#*:}"
+  if [[ -z "$path" || ! -x "$path" ]]; then
+    echo "ERROR: $name is unavailable."
+    echo "Run: bash scripts/camber_bootstrap.sh"
+    exit 4
   fi
 done
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi
-else
-  echo "ERROR: nvidia-smi not found. This job does not appear to have an NVIDIA GPU."
-  exit 3
-fi
-
-if ! command -v nvcc >/dev/null 2>&1; then
-  echo
-  echo "ERROR: nvcc was not found."
-  echo "The GPU is visible, but a CUDA Toolkit with the CUDA compiler is required to build Backend/CUDA/main.cu."
-  echo "Run this script in a Camber GPU environment/image that includes the CUDA Toolkit."
-  exit 4
-fi
-
 echo
-nvcc --version
-cmake --version | head -n 1
-g++ --version | head -n 1
+"$NVCC_BIN" --version
+"$CMAKE_BIN" --version | head -n 1
+"$CXX_BIN" --version | head -n 1
+
+CUDA_FLAGS=""
+if [[ "${CAMBER_NVCC_ALLOW_UNSUPPORTED:-0}" == "1" ]]; then
+  CUDA_FLAGS="--allow-unsupported-compiler"
+fi
 
 echo
 echo "== Configure =="
-cmake -S . -B "$BUILD_DIR"   -DRENDER_ENABLE_CUDA=ON   -DCMAKE_BUILD_TYPE=Release
+"$CMAKE_BIN" -S . -B "$BUILD_DIR"   -DRENDER_ENABLE_CUDA=ON   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_CXX_COMPILER="$CXX_BIN"   -DCMAKE_CUDA_COMPILER="$NVCC_BIN"   -DCMAKE_CUDA_HOST_COMPILER="$CXX_BIN"   -DCMAKE_CUDA_FLAGS="$CUDA_FLAGS"
 
 echo
 echo "== Build =="
-cmake --build "$BUILD_DIR" --config Release -j"$(nproc)"
+"$CMAKE_BIN" --build "$BUILD_DIR" --config Release -j"$(nproc)"
 
 BIN="$BUILD_DIR/render_cuda"
 if [[ ! -x "$BIN" && -x "$BUILD_DIR/Release/render_cuda" ]]; then
