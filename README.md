@@ -60,13 +60,20 @@ CPU：
 
 ```text
 cornell_cpu_raw.ppm
-cornell_cpu_denoised.ppm
-cornell_cpu_guide_confidence.ppm
+cornell_cpu_diffuse.ppm
+cornell_cpu_specular.ppm
+cornell_cpu_final.ppm
 ```
 
 CUDA：
 
 ```text
 cornell_cuda_raw.ppm
-cornell_cuda_denoised.ppm
+cornell_cuda_diffuse.ppm
+cornell_cuda_specular.ppm
+cornell_cuda_final.ppm
 ```
+
+在 Camber GPU 会话中运行 `bash scripts/camber_interactive_gpu.sh 256 8 16`
+会构建 CUDA 后端、实际使用 GPU 渲染，并把这四张图转换为 PNG 上传到个人 Stash。
+GitHub Actions 的 `CUDA Compile Test` 只验证 CUDA 编译；普通托管 runner 不执行 GPU 渲染。

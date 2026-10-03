@@ -1,6 +1,11 @@
 /build/
+/build-local/
+/build-camber/
+/build-cuda-ci/
 /out/
 .vs/
+.camber_toolchain.env
+__pycache__/
 CMakeSettings.json
 *.user
 *.suo

@@ -17,6 +17,7 @@ fi
 CMAKE_BIN="${CAMBER_CMAKE:-$(command -v cmake || true)}"
 NVCC_BIN="${CAMBER_NVCC:-$(command -v nvcc || true)}"
 CXX_BIN="${CAMBER_CXX:-$(command -v g++ || true)}"
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
 
 if [[ -z "$CXX_BIN" && -x /opt/conda/bin/x86_64-conda-linux-gnu-g++ ]]; then
   CXX_BIN=/opt/conda/bin/x86_64-conda-linux-gnu-g++
@@ -46,6 +47,15 @@ for pair in "cmake:$CMAKE_BIN" "nvcc:$NVCC_BIN" "g++:$CXX_BIN"; do
     exit 4
   fi
 done
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: Python is unavailable; PNG conversion requires Python 3."
+  exit 4
+fi
+"$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || {
+  echo "ERROR: PNG conversion requires Python 3.8 or newer."
+  exit 4
+}
 
 echo
 "$NVCC_BIN" --version
@@ -82,4 +92,25 @@ echo "SPP=$SPP SamplesPerPass=$SAMPLES_PER_PASS MaxDepth=$MAX_DEPTH"
 
 echo
 echo "== Outputs =="
-find . -maxdepth 2 -type f \( -name "*.ppm" -o -name "*.png" \) -print
+outputs=(
+  cornell_cuda_raw.ppm
+  cornell_cuda_diffuse.ppm
+  cornell_cuda_specular.ppm
+  cornell_cuda_final.ppm
+)
+for file in "${outputs[@]}"; do
+  if [[ ! -s "$file" ]]; then
+    echo "ERROR: missing or empty GPU render output: $file"
+    exit 6
+  fi
+done
+
+"$PYTHON_BIN" scripts/ppm_to_png.py "${outputs[@]}"
+for file in "${outputs[@]}"; do
+  png="${file%.ppm}.png"
+  if [[ ! -s "$png" ]]; then
+    echo "ERROR: missing or empty PNG output: $png"
+    exit 7
+  fi
+  echo "$png"
+done

@@ -81,4 +81,4 @@ If `nvidia-smi` succeeds but `nvcc --version` fails, use a Camber environment/im
 
 ## Output
 
-The renderer currently writes its PPM outputs to the working directory. Copy important results into Camber Stash before ending an ephemeral job if the environment does not persist its working directory.
+The build script writes four PPM signals and converts each to PNG in the working directory. The interactive script uploads the PNG files to personal Camber Stash. Check the files before ending an ephemeral GPU session.

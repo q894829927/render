@@ -33,7 +33,8 @@ This smoke test checks:
 - CUDA CMake configuration
 - `render_cuda` build
 - a 4 SPP render
-- upload of generated PPM/PNG files to personal Stash
+- conversion of all four CUDA PPM signals to PNG without extra Python packages
+- upload of the four CUDA PNG files to personal Stash
 
 If the smoke test passes:
 
@@ -52,6 +53,9 @@ bash scripts/camber_interactive_gpu.sh 1024 8 16
 The Hub GPU connection is interactive and may remain allocated after the render command exits.
 
 After results are safely in Stash, use the Camber UI to **Stop connection / Disconnect** the GPU Xsmall session.
+
+The PNG files are also left in the repository working directory as
+`cornell_cuda_{raw,diffuse,specular,final}.png`.
 
 Do not rely on closing the browser tab to release the GPU.
 

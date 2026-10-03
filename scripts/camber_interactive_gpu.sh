@@ -45,13 +45,11 @@ if command -v camber >/dev/null 2>&1; then
 
   if [[ -n "$STASH_ROOT" ]]; then
     camber stash mkdir "$STASH_ROOT" >/dev/null 2>&1 || true
-    shopt -s nullglob
-    outputs=( *.ppm *.png )
-    for file in "${outputs[@]}"; do
+    for signal in raw diffuse specular final; do
+      file="cornell_cuda_${signal}.png"
       echo "Uploading $file -> $STASH_ROOT"
       camber stash cp "$file" "$STASH_ROOT"
     done
-    shopt -u nullglob
   else
     echo "WARNING: could not resolve personal Stash path."
   fi

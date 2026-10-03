@@ -7,6 +7,8 @@ on:
       - "Core/**"
       - "Backend/CUDA/**"
       - "CMakeLists.txt"
+      - "scripts/camber_*.sh"
+      - "scripts/ppm_to_png.py"
       - ".github/workflows/cuda-compile.yml"
   pull_request:
     branches: [ main ]
@@ -14,6 +16,8 @@ on:
       - "Core/**"
       - "Backend/CUDA/**"
       - "CMakeLists.txt"
+      - "scripts/camber_*.sh"
+      - "scripts/ppm_to_png.py"
       - ".github/workflows/cuda-compile.yml"
   workflow_dispatch:
 
@@ -25,6 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check Camber scripts
+        run: bash -n scripts/camber_bootstrap.sh scripts/camber_gpu_build.sh scripts/camber_interactive_gpu.sh
 
       - name: Compile CUDA backend in CUDA development image
         run: |

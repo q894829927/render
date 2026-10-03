@@ -7,6 +7,7 @@ on:
       - "Core/**"
       - "Backend/**"
       - "CMakeLists.txt"
+      - "scripts/ppm_to_png.py"
       - ".github/workflows/render-preview.yml"
   pull_request:
     branches: [ main ]
@@ -14,6 +15,7 @@ on:
       - "Core/**"
       - "Backend/**"
       - "CMakeLists.txt"
+      - "scripts/ppm_to_png.py"
       - ".github/workflows/render-preview.yml"
   workflow_dispatch:
 
@@ -35,9 +37,6 @@ jobs:
       - name: Build
         run: cmake --build build -j2
 
-      - name: Install PNG converter
-        run: python3 -m pip install --disable-pip-version-check --quiet pillow
-
       - name: Render 16 / 64 / 256 SPP validation set
         run: |
           set -euo pipefail
@@ -46,22 +45,12 @@ jobs:
             echo "=== Rendering ${spp} SPP ==="
             ./build/render_cpu "${spp}" 8 16
             mkdir -p "validation/${spp}spp"
-            python3 - "${spp}" <<'PY'
-          import sys
-          from pathlib import Path
-          from PIL import Image
-
-          spp = sys.argv[1]
-          out = Path("validation") / f"{spp}spp"
-          for signal in ("raw", "diffuse", "specular", "final"):
-              src = Path(f"cornell_cpu_{signal}.ppm")
-              if not src.exists() or src.stat().st_size == 0:
-                  raise SystemExit(f"missing render output: {src}")
-              image = Image.open(src)
-              dst = out / f"cornell_{signal}.png"
-              image.save(dst, optimize=True)
-              print(f"{dst}: {image.width}x{image.height}")
-          PY
+            python3 scripts/ppm_to_png.py \
+              --output-dir "validation/${spp}spp" \
+              cornell_cpu_raw.ppm \
+              cornell_cpu_diffuse.ppm \
+              cornell_cpu_specular.ppm \
+              cornell_cpu_final.ppm
           done
 
       - name: Verify validation PNGs
@@ -69,7 +58,7 @@ jobs:
           set -euo pipefail
           for spp in 16 64 256; do
             for signal in raw diffuse specular final; do
-              test -s "validation/${spp}spp/cornell_${signal}.png"
+              test -s "validation/${spp}spp/cornell_cpu_${signal}.png"
             done
           done
           find validation -type f -name "*.png" -print
