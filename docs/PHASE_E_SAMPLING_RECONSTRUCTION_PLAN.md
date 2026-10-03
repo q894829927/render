@@ -531,6 +531,93 @@ count <= 1
 
 # E5 — Adaptive A-Trous
 
+## E5 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：
+
+- `fc5574df6035621958b8859b793b934161b67fce`：Adaptive A-Trous 主实现。
+- `1638f32fc319ac52d07f8ec8d09d2f5bd6e2a85c`：修正非饱和 radius test。
+- `518af6f308146b9f92d9c2cf5b2dd36b29f836c2`：增强低 SPP 自适应过滤。
+- `6452674900bcd465f1e487361a5a7b53e3a4c25f`：把 reconstruction-time sampling variance 与 propagated filter variance 正式拆分。
+
+已完成：
+
+- 固定全强度 step 1 / 2 / 4 / 8 改为连续 `filterStrength ∈ [0,1]`。
+- 每轮仍生成 A-Trous candidate，但最终通过连续强度在 center 与 filtered candidate 之间混合，不使用 per-pixel hard STOP。
+- Adaptive controller 正式使用：
+  - RQMC RGB sampling variance
+  - Primary sample count
+  - Coverage confidence
+  - Depth continuity
+  - Normal continuity
+  - Material / instance / surfaceGroup compatibility
+  - Roughness
+  - Diffuse / Specular signal type
+  - 当前 A-Trous radius
+- Geometry confidence 从当前 A-Trous footprint 内的 geometry support 计算；硬折角、depth discontinuity 和缺失 surface support 会降低宽半径过滤强度。
+- Specular 使用 roughness-dependent radius gate；光滑高光比 rough diffuse 更严格地限制宽范围传播。
+- Low-SPP sample scarcity 只增强已有 noise evidence，不把 zero-variance signal 强行模糊。
+- 关键统计语义修正：**空间滤波后的 working variance 不再替代原始 RQMC sampling uncertainty**。
+  - `samplingVariance`：immutable，来自 Reconstruction 的 replicate means，用于决定 Adaptive Filter Strength。
+  - `working / propagated variance`：只用于当前邻域的 variance-aware color weighting。
+  - 原因：空间滤波没有增加新的独立 Path Samples，不能因此宣称 Monte Carlo estimator uncertainty 已下降。
+- CPU / CUDA 共用同一 Adaptive A-Trous 算法；CUDA 额外保存 immutable sampling variance buffer。
+- 新增 `AdaptiveDenoiserTest`，验证：
+  - variance 越高，过滤需求越强；
+  - 宽 radius 需要更强 noise evidence；
+  - geometry discontinuity 降低过滤；
+  - coverage confidence 低时降低过滤；
+  - low sample count 增强 noise demand；
+  - smooth specular 比 rough specular 更严格；
+  - zero sampling variance 为 exact no-op；
+  - working variance 被过滤为 0 时仍不能抹掉原始 sampling uncertainty。
+- Render Validation 现在保存每个 SPP 的 `render.log`，并自动验证 16 SPP 的平均 filter strength 大于 256 SPP。
+- SampleGenerator / SurfaceIdentity / Reconstruction / AdaptiveDenoiser 四组 tests 全部通过。
+- 64 SPP 下 samplesPerPass = 1 / 2 / 4 / 8 / 16 determinism 保持通过。
+- CPU Smoke、Render Validation、Sample Determinism、CUDA Compile Test 在 `6452674900...` 全部通过。
+
+实际平均过滤强度（最终 E5）：
+
+~~~text
+16 SPP
+  step 1: diffuse 0.8410 / specular 0.3636
+  step 2: diffuse 0.7126 / specular 0.2596
+  step 4: diffuse 0.5525 / specular 0.1708
+  step 8: diffuse 0.3917 / specular 0.1065
+
+64 SPP
+  step 1: diffuse 0.5009 / specular 0.1360
+  step 2: diffuse 0.3467 / specular 0.0890
+  step 4: diffuse 0.2246 / specular 0.0552
+  step 8: diffuse 0.1401 / specular 0.0333
+
+256 SPP
+  step 1: diffuse 0.2659 / specular 0.0717
+  step 2: diffuse 0.1762 / specular 0.0464
+  step 4: diffuse 0.1121 / specular 0.0285
+  step 8: diffuse 0.0694 / specular 0.0171
+~~~
+
+这验证了两层自适应关系：
+
+~~~text
+SPP 越高
+→ sampling uncertainty 越低
+→ filterStrength 越低
+
+radius 越大
+→ 需要更强 noise evidence
+→ filterStrength 连续下降
+~~~
+
+视觉状态：
+
+- 16 / 64 SPP 相比 E4 固定四轮全强度过滤保留了更多高频细节，同时也暴露出更多残余颗粒。
+- 256 SPP 明显减少了不必要的宽半径平滑，Box 轮廓、墙面渐变和灯边没有观察到新的 halo / bleeding。
+- E5 暂不把“更锐”或“更平”作为最终优劣判断；E6 将引入 Linear HDR/PFM reference 与 NRMSE/RMSE/MAE，决定当前 noise/detail trade-off 是否需要进一步校准。
+
 ## 目标
 
 从固定 step 1 / 2 / 4 / 8 的四轮过滤，升级为由噪声与几何可信度控制的自适应过滤。
