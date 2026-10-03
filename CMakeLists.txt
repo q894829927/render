@@ -19,6 +19,12 @@ target_include_directories(sample_generator_test PRIVATE ${CMAKE_CURRENT_SOURCE_
 enable_testing()
 add_test(NAME sample_generator COMMAND sample_generator_test)
 
+add_executable(surface_identity_test
+    Tests/SurfaceIdentityTest.cpp
+)
+target_include_directories(surface_identity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME surface_identity COMMAND surface_identity_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()

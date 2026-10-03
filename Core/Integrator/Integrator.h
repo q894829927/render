@@ -26,7 +26,7 @@ RENDER_DEVICE inline PathSample TracePath(
                 result.primary.depth = hitInfo.lightHit.t;
                 result.primary.roughness = 0.0f;
                 result.primary.metallic = 0.0f;
-                result.primary.primitiveId = kLightPrimitiveId;
+                result.primary.identity = hitInfo.lightHit.identity;
                 result.primary.valid = 1;
             }
             break;
@@ -39,7 +39,7 @@ RENDER_DEVICE inline PathSample TracePath(
             result.primary.depth = hit.t;
             result.primary.roughness = hit.material.roughness;
             result.primary.metallic = hit.material.metallic;
-            result.primary.primitiveId = hit.primitiveId;
+            result.primary.identity = hit.identity;
             result.primary.valid = 1;
         }
 

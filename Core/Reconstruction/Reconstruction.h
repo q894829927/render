@@ -54,7 +54,7 @@ struct ReplicateSignalAccumulator {
 };
 
 struct SurfaceLayerAccumulator {
-    std::uint32_t primitiveId = kInvalidPrimitiveId;
+    SurfaceIdentity identity{};
     unsigned int count = 0;
 
     Vec3 normalSum;
@@ -88,7 +88,7 @@ struct SurfaceGuide {
     float roughness = 0.0f;
     float metallic = 0.0f;
     float coverage = 0.0f;
-    std::uint32_t primitiveId = kInvalidPrimitiveId;
+    SurfaceIdentity identity{};
 };
 
 struct ResolvedLayer {
@@ -108,18 +108,36 @@ struct ResolvedPixel {
     ResolvedLayer layers[kPrimarySurfaceSlots];
 };
 
+RENDER_HD inline void MergeLayerIdentity(
+    SurfaceIdentity& accumulated,
+    const SurfaceIdentity& incoming)
+{
+    if (accumulated.primitiveId != incoming.primitiveId)
+        accumulated.primitiveId = kInvalidSurfaceId;
+    if (accumulated.materialId != incoming.materialId)
+        accumulated.materialId = kInvalidSurfaceId;
+}
+
 RENDER_HD inline int FindOrCreateLayer(
     PixelAccumulator& pixel,
-    std::uint32_t primitiveId)
+    const SurfaceIdentity& identity)
 {
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         if (pixel.layers[i].count > 0 &&
-            pixel.layers[i].primitiveId == primitiveId)
+            SameReconstructionSurface(
+                pixel.layers[i].identity,
+                identity))
+        {
+            MergeLayerIdentity(
+                pixel.layers[i].identity,
+                identity);
             return i;
+        }
     }
+
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         if (pixel.layers[i].count == 0) {
-            pixel.layers[i].primitiveId = primitiveId;
+            pixel.layers[i].identity = identity;
             return i;
         }
     }
@@ -142,7 +160,9 @@ RENDER_HD inline void AccumulatePathSample(
         return;
     }
 
-    int slot = FindOrCreateLayer(pixel, sample.primary.primitiveId);
+    int slot = FindOrCreateLayer(
+        pixel,
+        sample.primary.identity);
     if (slot < 0) {
         pixel.overflowSum += total;
         return;
@@ -171,7 +191,9 @@ RENDER_HD inline void AccumulatePathSample(
 }
 
 RENDER_HD inline Vec3 Mean(const ColorMoments& m, unsigned int count) {
-    return count > 0 ? m.sum / static_cast<float>(count) : Vec3(0.0f);
+    return count > 0
+        ? m.sum / static_cast<float>(count)
+        : Vec3(0.0f);
 }
 
 RENDER_HD inline Vec3 ConservativeVariance(const Vec3& mean) {
@@ -201,7 +223,8 @@ RENDER_HD inline Vec3 ReplicateVarianceOfMean(
     Vec3 squaredDeviation(0.0f);
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
-        Vec3 replicateMean = replicates[r].sum /
+        Vec3 replicateMean =
+            replicates[r].sum /
             static_cast<float>(replicates[r].sampleCount);
         squaredDeviation += Square(replicateMean - meanOfMeans);
     }
@@ -230,7 +253,8 @@ RENDER_HD inline Vec3 RawReplicateVarianceOfMean(
     Vec3 squaredDeviation(0.0f);
     for (std::uint32_t r = 0; r < kSampleReplicateCount; ++r) {
         if (replicates[r].sampleCount == 0) continue;
-        Vec3 replicateMean = replicates[r].rawSum /
+        Vec3 replicateMean =
+            replicates[r].rawSum /
             static_cast<float>(replicates[r].sampleCount);
         squaredDeviation += Square(replicateMean - meanOfMeans);
     }
@@ -240,53 +264,77 @@ RENDER_HD inline Vec3 RawReplicateVarianceOfMean(
     return MaxZero(squaredDeviation / denom);
 }
 
-RENDER_HD inline ResolvedPixel ResolvePixel(const PixelAccumulator& pixel) {
+RENDER_HD inline ResolvedPixel ResolvePixel(
+    const PixelAccumulator& pixel)
+{
     ResolvedPixel out{};
     if (pixel.sampleCount == 0) return out;
 
     out.raw = Mean(pixel.raw, pixel.sampleCount);
     out.rawVariance =
-        RawReplicateVarianceOfMean(pixel.replicates, out.raw);
+        RawReplicateVarianceOfMean(
+            pixel.replicates,
+            out.raw);
     out.overflow =
-        pixel.overflowSum / static_cast<float>(pixel.sampleCount);
+        pixel.overflowSum /
+        static_cast<float>(pixel.sampleCount);
 
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
-        const SurfaceLayerAccumulator& src = pixel.layers[i];
+        const SurfaceLayerAccumulator& src =
+            pixel.layers[i];
         if (src.count == 0) continue;
 
-        float inv = 1.0f / static_cast<float>(src.count);
+        float inv =
+            1.0f / static_cast<float>(src.count);
         ResolvedLayer& dst = out.layers[i];
         dst.valid = 1;
-        dst.guide.primitiveId = src.primitiveId;
-        dst.guide.normal = Normalize(src.normalSum * inv);
-        dst.guide.albedo = src.albedoSum * inv;
-        dst.guide.depth = src.depthSum * inv;
-        dst.guide.roughness = src.roughnessSum * inv;
-        dst.guide.metallic = src.metallicSum * inv;
+        dst.guide.identity = src.identity;
+        dst.guide.normal =
+            Normalize(src.normalSum * inv);
+        dst.guide.albedo =
+            src.albedoSum * inv;
+        dst.guide.depth =
+            src.depthSum * inv;
+        dst.guide.roughness =
+            src.roughnessSum * inv;
+        dst.guide.metallic =
+            src.metallicSum * inv;
         dst.guide.coverage =
-            static_cast<float>(src.count) / static_cast<float>(pixel.sampleCount);
+            static_cast<float>(src.count) /
+            static_cast<float>(pixel.sampleCount);
 
-        dst.diffuseIllumination = Mean(src.diffuseIllumination, src.count);
-        dst.diffuseVariance = ReplicateVarianceOfMean(
-            src.diffuseReplicates, dst.diffuseIllumination);
+        dst.diffuseIllumination =
+            Mean(
+                src.diffuseIllumination,
+                src.count);
+        dst.diffuseVariance =
+            ReplicateVarianceOfMean(
+                src.diffuseReplicates,
+                dst.diffuseIllumination);
 
-        dst.specular = Mean(src.specular, src.count);
-        dst.specularVariance = ReplicateVarianceOfMean(
-            src.specularReplicates, dst.specular);
+        dst.specular =
+            Mean(src.specular, src.count);
+        dst.specularVariance =
+            ReplicateVarianceOfMean(
+                src.specularReplicates,
+                dst.specular);
 
-        dst.emission = src.emissionSum * inv;
+        dst.emission =
+            src.emissionSum * inv;
     }
 
     return out;
 }
 
-RENDER_HD inline int FindResolvedLayer(
+RENDER_HD inline int FindReconstructionLayer(
     const ResolvedPixel& pixel,
-    std::uint32_t primitiveId)
+    const SurfaceIdentity& identity)
 {
     for (int i = 0; i < kPrimarySurfaceSlots; ++i) {
         if (pixel.layers[i].valid &&
-            pixel.layers[i].guide.primitiveId == primitiveId)
+            SameReconstructionSurface(
+                pixel.layers[i].guide.identity,
+                identity))
             return i;
     }
     return -1;

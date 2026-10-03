@@ -10,7 +10,7 @@ struct PrimarySurfaceSample {
     float depth = kInf;
     float roughness = 0.0f;
     float metallic = 0.0f;
-    std::uint32_t primitiveId = kInvalidPrimitiveId;
+    SurfaceIdentity identity{};
     int valid = 0;
 };
 

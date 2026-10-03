@@ -49,9 +49,11 @@ RENDER_HD inline FilteredSignal ATrousLayerAt(
             if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
 
             int samplePixelIndex = sy * width + sx;
-            int sampleSlot = FindResolvedLayer(
+            int sampleSlot = FindBestDenoiseLayer(
                 pixels[samplePixelIndex],
-                centerLayer.guide.primitiveId);
+                centerLayer.guide,
+                settings,
+                signal);
             if (sampleSlot < 0) continue;
 
             const ResolvedLayer& sampleLayer =

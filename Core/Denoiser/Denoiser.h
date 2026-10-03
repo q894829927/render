@@ -22,13 +22,35 @@ struct DenoiseSettings {
     float specularNormalPowerMax = 64.0f;
 };
 
+RENDER_HD inline float SurfaceIdentityCompatibilityWeight(
+    const SurfaceIdentity& center,
+    const SurfaceIdentity& sample)
+{
+    if (HasValidMaterialId(center) &&
+        HasValidMaterialId(sample) &&
+        center.materialId != sample.materialId)
+        return 0.0f;
+
+    if (SameReconstructionSurface(center, sample))
+        return 1.0f;
+
+    if (center.instanceId == sample.instanceId)
+        return 0.75f;
+
+    return 0.35f;
+}
+
 RENDER_HD inline float SurfaceGuideWeight(
     const SurfaceGuide& center,
     const SurfaceGuide& sample,
     const DenoiseSettings& settings,
     DenoiseSignal signal)
 {
-    if (center.primitiveId != sample.primitiveId) return 0.0f;
+    float identityWeight =
+        SurfaceIdentityCompatibilityWeight(
+            center.identity,
+            sample.identity);
+    if (identityWeight <= 0.0f) return 0.0f;
 
     float coverageWeight = expf(
         -fabsf(sample.coverage - center.coverage) /
@@ -40,35 +62,86 @@ RENDER_HD inline float SurfaceGuideWeight(
 
     float depthWeight = 1.0f;
     if (centerFinite && sampleFinite) {
-        float depthScale = fmaxf(fminf(center.depth, sample.depth), 1.0f);
-        float relativeDepthDiff = fabsf(sample.depth - center.depth) / depthScale;
+        float depthScale =
+            fmaxf(
+                fminf(center.depth, sample.depth),
+                1.0f);
+        float relativeDepthDiff =
+            fabsf(sample.depth - center.depth) /
+            depthScale;
         depthWeight = expf(
-            -relativeDepthDiff / fmaxf(settings.phiDepth, 1e-6f));
+            -relativeDepthDiff /
+            fmaxf(settings.phiDepth, 1e-6f));
     }
 
-    float normalDot = Saturate(Dot(center.normal, sample.normal));
-    float normalPower = settings.diffuseNormalPower;
+    float normalDot =
+        Saturate(Dot(center.normal, sample.normal));
+    float normalPower =
+        settings.diffuseNormalPower;
     if (signal == DenoiseSignal::Specular) {
-        float smoothness = 1.0f - Saturate(center.roughness);
-        normalPower = settings.specularNormalPowerMin +
-            (settings.specularNormalPowerMax - settings.specularNormalPowerMin) *
+        float smoothness =
+            1.0f - Saturate(center.roughness);
+        normalPower =
+            settings.specularNormalPowerMin +
+            (settings.specularNormalPowerMax -
+             settings.specularNormalPowerMin) *
             smoothness;
     }
-    float normalWeight = powf(normalDot, normalPower);
+    float normalWeight =
+        powf(normalDot, normalPower);
 
-    float albedoDiff = Length(sample.albedo - center.albedo);
+    float albedoDiff =
+        Length(sample.albedo - center.albedo);
     float albedoWeight = expf(
-        -albedoDiff / fmaxf(settings.phiAlbedo, 1e-5f));
+        -albedoDiff /
+        fmaxf(settings.phiAlbedo, 1e-5f));
 
     float roughnessWeight = 1.0f;
     if (signal == DenoiseSignal::Specular) {
         roughnessWeight = expf(
-            -fabsf(sample.roughness - center.roughness) /
-            fmaxf(settings.phiRoughness, 1e-5f));
+            -fabsf(
+                sample.roughness -
+                center.roughness) /
+            fmaxf(
+                settings.phiRoughness,
+                1e-5f));
     }
 
-    return coverageWeight * depthWeight * normalWeight *
-           albedoWeight * roughnessWeight;
+    return identityWeight *
+           coverageWeight *
+           depthWeight *
+           normalWeight *
+           albedoWeight *
+           roughnessWeight;
+}
+
+RENDER_HD inline int FindBestDenoiseLayer(
+    const ResolvedPixel& pixel,
+    const SurfaceGuide& centerGuide,
+    const DenoiseSettings& settings,
+    DenoiseSignal signal)
+{
+    int bestSlot = -1;
+    float bestWeight = 0.0f;
+
+    for (int slot = 0; slot < kPrimarySurfaceSlots; ++slot) {
+        const ResolvedLayer& layer =
+            pixel.layers[slot];
+        if (!layer.valid) continue;
+
+        float weight =
+            SurfaceGuideWeight(
+                centerGuide,
+                layer.guide,
+                settings,
+                signal);
+        if (weight > bestWeight) {
+            bestWeight = weight;
+            bestSlot = slot;
+        }
+    }
+
+    return bestSlot;
 }
 
 RENDER_HD inline float VarianceAwareColorWeight(
@@ -79,7 +152,10 @@ RENDER_HD inline float VarianceAwareColorWeight(
     float phi)
 {
     Vec3 d = sample - center;
-    Vec3 sigma2 = centerVariance + sampleVariance + Vec3(1e-6f);
+    Vec3 sigma2 =
+        centerVariance +
+        sampleVariance +
+        Vec3(1e-6f);
 
     float normalizedDistanceSquared =
         d.x*d.x / sigma2.x +
@@ -87,9 +163,13 @@ RENDER_HD inline float VarianceAwareColorWeight(
         d.z*d.z / sigma2.z;
 
     float normalizedDistance = sqrtf(
-        fmaxf(normalizedDistanceSquared / 3.0f, 0.0f));
+        fmaxf(
+            normalizedDistanceSquared / 3.0f,
+            0.0f));
 
-    return expf(-normalizedDistance / fmaxf(phi, 1e-5f));
+    return expf(
+        -normalizedDistance /
+        fmaxf(phi, 1e-5f));
 }
 
 } // namespace render

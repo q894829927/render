@@ -4,18 +4,16 @@ on:
   push:
     branches: [ main ]
     paths:
-      - "Core/Sampling/**"
-      - "Core/Integrator/**"
-      - "Core/Reconstruction/**"
+      - "Core/**"
+      - "Tests/**"
       - "Backend/CPU/**"
       - "CMakeLists.txt"
       - ".github/workflows/sample-determinism.yml"
   pull_request:
     branches: [ main ]
     paths:
-      - "Core/Sampling/**"
-      - "Core/Integrator/**"
-      - "Core/Reconstruction/**"
+      - "Core/**"
+      - "Tests/**"
       - "Backend/CPU/**"
       - "CMakeLists.txt"
       - ".github/workflows/sample-determinism.yml"
