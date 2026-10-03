@@ -1,0 +1,14 @@
+/build/
+/out/
+.vs/
+CMakeSettings.json
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.ppm
+*.png
+*.exe
+*.obj
+*.pdb
+*.ilk
