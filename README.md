@@ -14,6 +14,8 @@
 - 渐进式累积（Progressive Accumulation）
 - 确定性 SampleGenerator + 4 个 RQMC Replicates
 - Owen-scrambled Sobol（默认）+ deterministic hash reference sampler
+- Visibility-aware Reconstruction（coverage variance / confidence）
+- Film Reconstruction Filter：Tent（默认）/ Box（reference）
 - 同采样域 Primary Guide
 - 方差引导 A-Trous Denoiser
 - Cornell Box
@@ -37,12 +39,15 @@ cmake --build build --config Release
 
 前三个参数依次是：`SPP`、`Samples Per Pass`、`Max Depth`。
 
-第四个可选参数选择采样器：
+第四个可选参数选择采样器，第五个可选参数选择 Film Reconstruction Filter：
 
 ```bash
-./build/render_cpu 256 8 16 owen   # 默认
-./build/render_cpu 256 8 16 hash   # deterministic reference
+./build/render_cpu 256 8 16 owen tent   # 默认
+./build/render_cpu 256 8 16 owen box    # Box reconstruction reference
+./build/render_cpu 256 8 16 hash tent   # deterministic sampler reference
 ```
+
+Tent 使用归一化三角核，并直接在 Camera sample 阶段 importance-sample reconstruction kernel；不是对最终 PNG 做 blur。
 
 `Samples Per Pass` 只影响调度；相同 SPP 下不会改变样本集合或最终结果。
 
