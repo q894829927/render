@@ -4,6 +4,13 @@
 
 namespace render {
 
+struct BRDFLobes {
+    Vec3 diffuse;
+    Vec3 specular;
+
+    RENDER_HD Vec3 Total() const { return diffuse + specular; }
+};
+
 RENDER_HD inline Vec3 FresnelSchlick(float cosTheta, const Vec3& F0) {
     float f = powf(1.0f - Saturate(cosTheta), 5.0f);
     return F0 + (Vec3(1.0f) - F0) * f;
@@ -32,10 +39,15 @@ RENDER_HD inline float GeometrySmith(const Vec3& N, const Vec3& V, const Vec3& L
     return GeometrySmithG1(NdotV, roughness) * GeometrySmithG1(NdotL, roughness);
 }
 
-RENDER_HD inline Vec3 EvaluateBRDF(const Material& mat, const Vec3& N, const Vec3& V, const Vec3& L) {
+RENDER_HD inline BRDFLobes EvaluateBRDFLobes(
+    const Material& mat,
+    const Vec3& N,
+    const Vec3& V,
+    const Vec3& L)
+{
     float NdotV = fmaxf(Dot(N, V), 0.0f);
     float NdotL = fmaxf(Dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f) return Vec3(0.0f);
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return {};
 
     Vec3 H = Normalize(V + L);
     Vec3 F0 = Mix(Vec3(0.04f), mat.baseColor, mat.metallic);
@@ -43,10 +55,20 @@ RENDER_HD inline Vec3 EvaluateBRDF(const Material& mat, const Vec3& N, const Vec
     float G = GeometrySmith(N, V, L, mat.roughness);
     Vec3 F = FresnelSchlick(fmaxf(Dot(V, H), 0.0f), F0);
 
-    Vec3 specular = F * (D * G / fmaxf(4.0f * NdotV * NdotL, 1e-12f));
+    BRDFLobes lobes;
+    lobes.specular = F * (D * G / fmaxf(4.0f * NdotV * NdotL, 1e-12f));
     Vec3 kD = (Vec3(1.0f) - F) * (1.0f - mat.metallic);
-    Vec3 diffuse = kD * mat.baseColor * (1.0f / kPi);
-    return diffuse + specular;
+    lobes.diffuse = kD * mat.baseColor * (1.0f / kPi);
+    return lobes;
+}
+
+RENDER_HD inline Vec3 EvaluateBRDF(
+    const Material& mat,
+    const Vec3& N,
+    const Vec3& V,
+    const Vec3& L)
+{
+    return EvaluateBRDFLobes(mat, N, V, L).Total();
 }
 
 } // namespace render

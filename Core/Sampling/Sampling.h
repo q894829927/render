@@ -5,6 +5,18 @@
 
 namespace render {
 
+struct DirectLightingSample {
+    Vec3 diffuse;
+    Vec3 specular;
+
+    RENDER_HD Vec3 Total() const { return diffuse + specular; }
+};
+
+struct BsdfDirectionSample {
+    Vec3 direction;
+    float pdf = 0.0f;
+};
+
 RENDER_HD inline float SpecularSampleProbability(const Material& mat) {
     return Clamp(0.25f + 0.75f * mat.metallic, 0.05f, 1.0f);
 }
@@ -109,23 +121,22 @@ RENDER_HD inline float BSDFPdf(const Material& mat, const Vec3& N, const Vec3& V
 }
 
 template <typename RNG>
-RENDER_DEVICE inline Vec3 SampleBSDF(
+RENDER_DEVICE inline BsdfDirectionSample SampleBSDF(
     const Material& mat,
     const Vec3& N,
     const Vec3& V,
-    RNG& rng,
-    float& pdf)
+    RNG& rng)
 {
-    Vec3 L;
+    BsdfDirectionSample result;
     float ignored = 0.0f;
     if (rng.NextFloat() < SpecularSampleProbability(mat))
-        L = SampleGGXVNDF(N, V, mat.roughness, rng, ignored);
+        result.direction = SampleGGXVNDF(N, V, mat.roughness, rng, ignored);
     else
-        L = SampleCosineHemisphere(N, rng, ignored);
+        result.direction = SampleCosineHemisphere(N, rng, ignored);
 
-    if (Dot(N, L) <= 0.0f) { pdf = 0.0f; return Vec3(0.0f); }
-    pdf = BSDFPdf(mat, N, V, L);
-    return L;
+    if (Dot(N, result.direction) <= 0.0f) return {};
+    result.pdf = BSDFPdf(mat, N, V, result.direction);
+    return result;
 }
 
 RENDER_HD inline float PowerHeuristic(float pdfA, float pdfB) {
@@ -154,13 +165,13 @@ RENDER_HD inline float LightPdf(const RectLight& light, const Vec3& shadingPoint
 }
 
 template <typename RNG>
-RENDER_DEVICE inline Vec3 EstimateDirectMIS(
+RENDER_DEVICE inline DirectLightingSample EstimateDirectMIS(
     const HitRecord& hit,
     const Vec3& V,
     const SceneView& scene,
     RNG& rng)
 {
-    Vec3 direct(0.0f);
+    DirectLightingSample direct{};
 
     {
         Vec3 lightPoint = SampleLightPoint(scene.light, rng);
@@ -176,18 +187,20 @@ RENDER_DEVICE inline Vec3 EstimateDirectMIS(
             if (!Occluded(scene, shadowRay, dist)) {
                 float lightPdf = dist2 / fmaxf(cosLight * scene.light.Area(), 1e-12f);
                 float bsdfPdf = BSDFPdf(hit.material, hit.normal, V, L);
-                Vec3 f = EvaluateBRDF(hit.material, hit.normal, V, L);
+                BRDFLobes f = EvaluateBRDFLobes(hit.material, hit.normal, V, L);
                 float w = PowerHeuristic(lightPdf, bsdfPdf);
-                direct += scene.light.emission * f * NdotL * (w / fmaxf(lightPdf, 1e-12f));
+                float scale = NdotL * (w / fmaxf(lightPdf, 1e-12f));
+                direct.diffuse += scene.light.emission * f.diffuse * scale;
+                direct.specular += scene.light.emission * f.specular * scale;
             }
         }
     }
 
     {
-        float bsdfPdf = 0.0f;
-        Vec3 L = SampleBSDF(hit.material, hit.normal, V, rng, bsdfPdf);
+        BsdfDirectionSample bs = SampleBSDF(hit.material, hit.normal, V, rng);
+        Vec3 L = bs.direction;
         float NdotL = fmaxf(Dot(hit.normal, L), 0.0f);
-        if (bsdfPdf > 1e-12f && NdotL > 0.0f) {
+        if (bs.pdf > 1e-12f && NdotL > 0.0f) {
             Ray sampledRay{ hit.position + hit.normal*kEpsilon, L };
             LightHit lightHit;
             if (HitRectLight(scene.light, sampledRay, kEpsilon, kInf, lightHit)) {
@@ -195,9 +208,11 @@ RENDER_DEVICE inline Vec3 EstimateDirectMIS(
                 bool blocked = HitScene(scene, sampledRay, kEpsilon, lightHit.t - kEpsilon, blocker);
                 if (!blocked) {
                     float lightPdf = LightPdf(scene.light, hit.position, L);
-                    Vec3 f = EvaluateBRDF(hit.material, hit.normal, V, L);
-                    float w = PowerHeuristic(bsdfPdf, lightPdf);
-                    direct += scene.light.emission * f * NdotL * (w / fmaxf(bsdfPdf, 1e-12f));
+                    BRDFLobes f = EvaluateBRDFLobes(hit.material, hit.normal, V, L);
+                    float w = PowerHeuristic(bs.pdf, lightPdf);
+                    float scale = NdotL * (w / fmaxf(bs.pdf, 1e-12f));
+                    direct.diffuse += scene.light.emission * f.diffuse * scale;
+                    direct.specular += scene.light.emission * f.specular * scale;
                 }
             }
         }

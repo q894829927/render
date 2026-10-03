@@ -1,9 +1,15 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Core/Math/Math.h"
 #include "Core/Material/Material.h"
 
 namespace render {
+
+constexpr std::uint32_t kInvalidPrimitiveId = 0xffffffffu;
+constexpr std::uint32_t kLightPrimitiveId = 0xfffffffeu;
+constexpr std::uint32_t kBoxPrimitiveBase = 0x40000000u;
 
 enum class RectAxis : int { XY, XZ, YZ };
 
@@ -50,6 +56,7 @@ struct HitRecord {
     Material material;
     float t = 0.0f;
     bool frontFace = false;
+    std::uint32_t primitiveId = kInvalidPrimitiveId;
 
     RENDER_HD void SetFaceNormal(const Ray& ray, const Vec3& outwardNormal) {
         frontFace = Dot(ray.direction, outwardNormal) < 0.0f;
@@ -197,6 +204,7 @@ RENDER_HD inline bool HitScene(const SceneView& scene, const Ray& ray, float tMi
 
     for (int i = 0; i < scene.rectCount; ++i) {
         if (HitRect(scene.rects[i], ray, tMin, closest, temp)) {
+            temp.primitiveId = static_cast<std::uint32_t>(i);
             found = true;
             closest = temp.t;
             hit = temp;
@@ -204,6 +212,7 @@ RENDER_HD inline bool HitScene(const SceneView& scene, const Ray& ray, float tMi
     }
     for (int i = 0; i < scene.boxCount; ++i) {
         if (HitOrientedBox(scene.boxes[i], ray, tMin, closest, temp)) {
+            temp.primitiveId = kBoxPrimitiveBase + static_cast<std::uint32_t>(i);
             found = true;
             closest = temp.t;
             hit = temp;

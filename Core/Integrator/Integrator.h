@@ -1,79 +1,94 @@
 #pragma once
 
+#include "Core/Integrator/PathSample.h"
 #include "Core/Sampling/Sampling.h"
 
 namespace render {
 
-struct PrimaryGuide {
-    Vec3 normal;
-    Vec3 albedo;
-    Vec3 material;
-    float depth = kInf;
-    int valid = 0;
-};
-
 template <typename RNG>
-RENDER_DEVICE inline Vec3 TracePath(
+RENDER_DEVICE inline PathSample TracePath(
     Ray ray,
     const SceneView& scene,
     int maxDepth,
-    RNG& rng,
-    PrimaryGuide* primaryGuide)
+    RNG& rng)
 {
-    Vec3 radiance(0.0f);
-    Vec3 throughput(1.0f);
-
-    if (primaryGuide) *primaryGuide = PrimaryGuide{};
+    PathSample result{};
+    Vec3 diffuseThroughput(0.0f);
+    Vec3 specularThroughput(0.0f);
 
     for (int bounce = 0; bounce < maxDepth; ++bounce) {
         SceneHit hitInfo;
         if (!IntersectSceneWithLight(scene, ray, kEpsilon, kInf, hitInfo)) break;
 
         if (hitInfo.type == HitType::Light) {
-            if (bounce == 0 && primaryGuide) {
-                primaryGuide->normal = Normalize(hitInfo.lightHit.normal);
-                primaryGuide->albedo = Vec3(1.0f);
-                primaryGuide->material = Vec3(0.0f, 0.0f, 1.0f);
-                primaryGuide->depth = hitInfo.lightHit.t;
-                primaryGuide->valid = 1;
+            if (bounce == 0) {
+                result.emission += hitInfo.lightHit.emission;
+                result.primary.normal = Normalize(hitInfo.lightHit.normal);
+                result.primary.albedo = Vec3(1.0f);
+                result.primary.depth = hitInfo.lightHit.t;
+                result.primary.roughness = 0.0f;
+                result.primary.metallic = 0.0f;
+                result.primary.primitiveId = kLightPrimitiveId;
+                result.primary.valid = 1;
             }
-            if (bounce == 0) radiance += throughput * hitInfo.lightHit.emission;
+            // Light reached after a BSDF bounce is already represented by the
+            // two-technique direct-light MIS estimator at the previous surface.
             break;
         }
 
         const HitRecord& hit = hitInfo.surfaceHit;
-        if (bounce == 0 && primaryGuide) {
-            primaryGuide->normal = Normalize(hit.normal);
-            primaryGuide->albedo = hit.material.baseColor;
-            primaryGuide->material = Vec3(hit.material.metallic, hit.material.roughness, 0.0f);
-            primaryGuide->depth = hit.t;
-            primaryGuide->valid = 1;
+        if (bounce == 0) {
+            result.primary.normal = Normalize(hit.normal);
+            result.primary.albedo = hit.material.baseColor;
+            result.primary.depth = hit.t;
+            result.primary.roughness = hit.material.roughness;
+            result.primary.metallic = hit.material.metallic;
+            result.primary.primitiveId = hit.primitiveId;
+            result.primary.valid = 1;
         }
 
         Vec3 V = Normalize(-ray.direction);
-        radiance += throughput * EstimateDirectMIS(hit, V, scene, rng);
+        DirectLightingSample direct = EstimateDirectMIS(hit, V, scene, rng);
 
-        float bsdfPdf = 0.0f;
-        Vec3 wi = SampleBSDF(hit.material, hit.normal, V, rng, bsdfPdf);
-        float cosTheta = fmaxf(Dot(hit.normal, wi), 0.0f);
-        if (bsdfPdf <= 1e-12f || cosTheta <= 0.0f) break;
-
-        Vec3 f = EvaluateBRDF(hit.material, hit.normal, V, wi);
-        throughput = throughput * f * (cosTheta / bsdfPdf);
-
-        if (bounce >= kRussianRouletteStartBounce) {
-            float survive = Clamp(MaxComponent(throughput), 0.05f, 0.95f);
-            if (rng.NextFloat() > survive) break;
-            throughput = throughput / survive;
+        if (bounce == 0) {
+            result.diffuse += direct.diffuse;
+            result.specular += direct.specular;
+        } else {
+            Vec3 localDirect = direct.Total();
+            result.diffuse += diffuseThroughput * localDirect;
+            result.specular += specularThroughput * localDirect;
         }
 
-        if (!IsFinite(throughput) || MaxComponent(throughput) <= 1e-8f) break;
+        BsdfDirectionSample bs = SampleBSDF(hit.material, hit.normal, V, rng);
+        float cosTheta = fmaxf(Dot(hit.normal, bs.direction), 0.0f);
+        if (bs.pdf <= 1e-12f || cosTheta <= 0.0f) break;
+
+        BRDFLobes f = EvaluateBRDFLobes(hit.material, hit.normal, V, bs.direction);
+        if (bounce == 0) {
+            diffuseThroughput = f.diffuse * (cosTheta / bs.pdf);
+            specularThroughput = f.specular * (cosTheta / bs.pdf);
+        } else {
+            Vec3 factor = f.Total() * (cosTheta / bs.pdf);
+            diffuseThroughput = diffuseThroughput * factor;
+            specularThroughput = specularThroughput * factor;
+        }
+
+        Vec3 totalThroughput = diffuseThroughput + specularThroughput;
+        if (bounce >= kRussianRouletteStartBounce) {
+            float survive = Clamp(MaxComponent(totalThroughput), 0.05f, 0.95f);
+            if (rng.NextFloat() > survive) break;
+            diffuseThroughput = diffuseThroughput / survive;
+            specularThroughput = specularThroughput / survive;
+            totalThroughput = diffuseThroughput + specularThroughput;
+        }
+
+        if (!IsFinite(totalThroughput) || MaxComponent(totalThroughput) <= 1e-8f) break;
 
         ray.origin = hit.position + hit.normal * kEpsilon;
-        ray.direction = wi;
+        ray.direction = bs.direction;
     }
 
-    return radiance;
+    return result;
 }
 
 } // namespace render

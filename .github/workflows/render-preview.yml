@@ -1,4 +1,4 @@
-name: Render Preview
+name: Render Validation
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
       - "Backend/**"
       - "CMakeLists.txt"
       - ".github/workflows/render-preview.yml"
-      - ".github/workflows/cpu-smoke.yml"
   pull_request:
     branches: [ main ]
     paths:
@@ -19,9 +18,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  render-preview:
+  render-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -36,38 +35,49 @@ jobs:
       - name: Build
         run: cmake --build build -j2
 
-      - name: Render preview
-        run: ./build/render_cpu 16 4 8
+      - name: Install PNG converter
+        run: python3 -m pip install --disable-pip-version-check --quiet pillow
 
-      - name: Verify PPM outputs
+      - name: Render 16 / 64 / 256 SPP validation set
         run: |
-          test -s cornell_cpu_raw.ppm
-          test -s cornell_cpu_denoised.ppm
-
-      - name: Convert PPM to PNG
-        run: |
-          python3 -m pip install --disable-pip-version-check --quiet pillow
-          python3 - <<'PY'
+          set -euo pipefail
+          mkdir -p validation
+          for spp in 16 64 256; do
+            echo "=== Rendering ${spp} SPP ==="
+            ./build/render_cpu "${spp}" 8 16
+            mkdir -p "validation/${spp}spp"
+            python3 - "${spp}" <<'PY'
+          import sys
+          from pathlib import Path
           from PIL import Image
-          for stem in ("cornell_cpu_raw", "cornell_cpu_denoised"):
-              image = Image.open(stem + ".ppm")
-              image.save(stem + ".png", optimize=True)
-              print(f"Saved {stem}.png: {image.width}x{image.height}")
+
+          spp = sys.argv[1]
+          out = Path("validation") / f"{spp}spp"
+          for signal in ("raw", "diffuse", "specular", "final"):
+              src = Path(f"cornell_cpu_{signal}.ppm")
+              if not src.exists() or src.stat().st_size == 0:
+                  raise SystemExit(f"missing render output: {src}")
+              image = Image.open(src)
+              dst = out / f"cornell_{signal}.png"
+              image.save(dst, optimize=True)
+              print(f"{dst}: {image.width}x{image.height}")
           PY
+          done
 
-      - name: Verify PNG outputs
+      - name: Verify validation PNGs
         run: |
-          test -s cornell_cpu_raw.png
-          test -s cornell_cpu_denoised.png
-          file cornell_cpu_raw.png
-          file cornell_cpu_denoised.png
+          set -euo pipefail
+          for spp in 16 64 256; do
+            for signal in raw diffuse specular final; do
+              test -s "validation/${spp}spp/cornell_${signal}.png"
+            done
+          done
+          find validation -type f -name "*.png" -print
 
-      - name: Upload preview images
+      - name: Upload render validation
         uses: actions/upload-artifact@v4
         with:
-          name: render-preview
-          path: |
-            cornell_cpu_raw.png
-            cornell_cpu_denoised.png
+          name: render-validation
+          path: validation/
           if-no-files-found: error
           retention-days: 30

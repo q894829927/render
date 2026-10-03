@@ -1,68 +1,95 @@
 #pragma once
 
-#include "Core/Math/Math.h"
+#include "Core/Reconstruction/Reconstruction.h"
 
 namespace render {
 
+enum class DenoiseSignal : int {
+    DiffuseIllumination,
+    Specular
+};
+
 struct DenoiseSettings {
     int iterations = 4;
-    float phiColor = 4.0f;
+    float phiColorDiffuse = 3.0f;
+    float phiColorSpecular = 2.5f;
     float phiDepth = 0.020f;
-    float normalPower = 8.0f;
-    float phiAlbedo = 0.22f;
-    float phiMaterial = 0.20f;
-    float phiCoverage = 0.25f;
+    float phiCoverage = 0.20f;
+    float phiAlbedo = 0.25f;
+    float phiRoughness = 0.20f;
+    float diffuseNormalPower = 8.0f;
+    float specularNormalPowerMin = 12.0f;
+    float specularNormalPowerMax = 64.0f;
 };
 
-struct GuideValue {
-    Vec3 normal;
-    Vec3 albedo;
-    Vec3 material;
-    float depth = kInf;
-    float coverage = 0.0f;
-    float confidence = 0.0f;
-};
-
-RENDER_HD inline float ComputeGuideConfidence(
-    const Vec3& meanNormal,
-    float meanDepth,
-    float depthVariance,
-    float coverage)
+RENDER_HD inline float SurfaceGuideWeight(
+    const SurfaceGuide& center,
+    const SurfaceGuide& sample,
+    const DenoiseSettings& settings,
+    DenoiseSignal signal)
 {
-    float normalCoherence = Saturate(Length(meanNormal));
-    float relativeDepthStd = sqrtf(fmaxf(depthVariance, 0.0f)) / fmaxf(meanDepth, 1.0f);
-    float depthCoherence = expf(-8.0f * relativeDepthStd);
-    return Saturate(coverage * (0.35f + 0.65f * normalCoherence) * depthCoherence);
-}
+    if (center.primitiveId != sample.primitiveId) return 0.0f;
 
-RENDER_HD inline float GuideSimilarityWeight(
-    const GuideValue& center,
-    const GuideValue& sample,
-    const DenoiseSettings& settings)
-{
-    float coverageWeight = expf(-fabsf(sample.coverage - center.coverage) / fmaxf(settings.phiCoverage, 1e-5f));
+    float coverageWeight = expf(
+        -fabsf(sample.coverage - center.coverage) /
+        fmaxf(settings.phiCoverage, 1e-5f));
 
     bool centerFinite = IsFinite(center.depth);
     bool sampleFinite = IsFinite(sample.depth);
-    if (!centerFinite && !sampleFinite) return coverageWeight;
-    if (centerFinite != sampleFinite) return coverageWeight * 0.01f;
+    if (centerFinite != sampleFinite) return 0.0f;
 
-    float guideTrust = 0.35f + 0.65f * fminf(center.confidence, sample.confidence);
-    float effectiveDepthPhi = settings.phiDepth / fmaxf(guideTrust, 0.25f);
-    float depthScale = fmaxf(fminf(center.depth, sample.depth), 1.0f);
-    float relativeDepthDiff = fabsf(sample.depth - center.depth) / depthScale;
-    float depthWeight = expf(-relativeDepthDiff / fmaxf(effectiveDepthPhi, 1e-6f));
+    float depthWeight = 1.0f;
+    if (centerFinite && sampleFinite) {
+        float depthScale = fmaxf(fminf(center.depth, sample.depth), 1.0f);
+        float relativeDepthDiff = fabsf(sample.depth - center.depth) / depthScale;
+        depthWeight = expf(
+            -relativeDepthDiff / fmaxf(settings.phiDepth, 1e-6f));
+    }
 
     float normalDot = Saturate(Dot(center.normal, sample.normal));
-    float normalWeight = powf(normalDot, settings.normalPower * guideTrust);
+    float normalPower = settings.diffuseNormalPower;
+    if (signal == DenoiseSignal::Specular) {
+        float smoothness = 1.0f - Saturate(center.roughness);
+        normalPower = settings.specularNormalPowerMin +
+            (settings.specularNormalPowerMax - settings.specularNormalPowerMin) *
+            smoothness;
+    }
+    float normalWeight = powf(normalDot, normalPower);
 
     float albedoDiff = Length(sample.albedo - center.albedo);
-    float albedoWeight = expf(-albedoDiff / fmaxf(settings.phiAlbedo / fmaxf(guideTrust, 0.25f), 1e-5f));
+    float albedoWeight = expf(
+        -albedoDiff / fmaxf(settings.phiAlbedo, 1e-5f));
 
-    float materialDiff = Length(sample.material - center.material);
-    float materialWeight = expf(-materialDiff / fmaxf(settings.phiMaterial / fmaxf(guideTrust, 0.25f), 1e-5f));
+    float roughnessWeight = 1.0f;
+    if (signal == DenoiseSignal::Specular) {
+        roughnessWeight = expf(
+            -fabsf(sample.roughness - center.roughness) /
+            fmaxf(settings.phiRoughness, 1e-5f));
+    }
 
-    return coverageWeight * depthWeight * normalWeight * albedoWeight * materialWeight;
+    return coverageWeight * depthWeight * normalWeight *
+           albedoWeight * roughnessWeight;
+}
+
+RENDER_HD inline float VarianceAwareColorWeight(
+    const Vec3& center,
+    const Vec3& sample,
+    const Vec3& centerVariance,
+    const Vec3& sampleVariance,
+    float phi)
+{
+    Vec3 d = sample - center;
+    Vec3 sigma2 = centerVariance + sampleVariance + Vec3(1e-6f);
+
+    float normalizedDistanceSquared =
+        d.x*d.x / sigma2.x +
+        d.y*d.y / sigma2.y +
+        d.z*d.z / sigma2.z;
+
+    float normalizedDistance = sqrtf(
+        fmaxf(normalizedDistanceSquared / 3.0f, 0.0f));
+
+    return expf(-normalizedDistance / fmaxf(phi, 1e-5f));
 }
 
 } // namespace render
