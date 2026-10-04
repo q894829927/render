@@ -855,6 +855,84 @@ tall-box silhouette ROI
 
 # E7 — 16 / 64 / 256 SPP 最终验证
 
+## E7 实施状态
+
+状态：**已完成并通过最终 CI 验收，Phase E 完成**。
+
+实现提交：
+
+- `d3838269ae843d0f7c3a92aaa454ec077914f176`：Debug AOV + 最终 validation pipeline。
+- `f35998f969cec9377cdaa7bc3d2307382e95bd09`：同步最终 `ARCHITECTURE.md`。
+
+最终验证 workflow：
+
+- Render Validation：`37166830585` ✅
+- Sample Determinism：`37166830589` ✅
+- CUDA Compile Test：`37166830584` ✅
+- CPU Smoke Test：`37166830579` ✅
+
+新增 Debug AOV：
+
+- Coverage
+- Coverage Confidence
+- RGB Variance / Noise Estimate
+- Surface Group
+- Normal
+- Depth
+- Effective Adaptive Filter Strength
+
+Debug AOV 只在 CPU `debug` 模式生成：
+
+~~~bash
+./build/render_cpu 256 8 16 owen tent debug
+~~~
+
+其中 Effective Filter Strength 使用四轮连续强度累计：
+
+~~~text
+effective = 1 - Π(1 - strength_i)
+~~~
+
+这样 Debug AOV 表示“该像素最终实际接受了多少过滤”，而不是只显示最后一个 step=8 的瞬时强度。
+
+CI 行为：
+
+- 普通成功 push：上传核心 PFM / PNG / render.log / metrics.json。
+- validation 失败：上传完整 Debug AOV artifact。
+- 手动 workflow_dispatch：上传完整 Debug AOV artifact。
+- 每次 render 仍会在 runner 内验证所有 Debug AOV 确实生成成功。
+
+E7 进一步加强了收敛 gate：
+
+- Raw / Final 不只检查 full-frame；
+- 现在 full-frame、Ceiling Light Border、Short Box、Tall Box 四个 ROI 都要求 64 SPP RMSE < 16 SPP RMSE；
+- 16 / 64 SPP Final 继续要求在全部 ROI 中比同 SPP Raw 更接近 256 SPP Raw provisional reference。
+
+最终 full-frame 数值保持：
+
+~~~text
+16 SPP
+Raw   RMSE  0.035680 / NRMSE 0.026565
+Final RMSE  0.029983 / NRMSE 0.022324
+
+64 SPP
+Raw   RMSE  0.011591 / NRMSE 0.008630
+Final RMSE  0.009226 / NRMSE 0.006869
+~~~
+
+最终视觉检查：
+
+- Ceiling Light：16 SPP 仍能看到低采样颗粒，但灯边已经连续；64 / 256 SPP 下没有此前明显的随机 staircase，也没有新增 halo。
+- Short Box：顶面 / 正面 / 侧面保持清晰分离，没有 surface mixing 或明显 edge darkening。
+- Tall Box：顶部与右侧折角稳定，没有跨 Face bleeding。
+- Large Flat Regions：16 → 64 → 256 SPP 噪声单调下降，256 SPP 没有出现固定四轮 A-Trous 时那种明显过平滑趋势。
+
+说明：
+
+- 普通 CI 的 256 SPP Raw 仍只是 provisional reference。
+- 1024 / 2048 SPP manual reference 是后续更严格的参数定标工具，不是 Phase E 架构完成的阻塞条件。
+- Phase E 结束后可进入 Triangle / Mesh / OBJ / BVH 阶段。
+
 ## 输出矩阵
 
 每个 SPP 输出：
@@ -1066,25 +1144,25 @@ GPU runtime automation
 
 只有同时满足以下条件才算完成：
 
-- [ ] samplesPerPass 不再改变样本集合、样本顺序、reduce 顺序和最终输出。
-- [ ] SampleGenerator 显式支持 pixel / replicate / sample-within-replicate / dimension。
-- [ ] 固定数量的独立 RQMC replicates 可用于 noise estimation。
-- [ ] 默认 Camera sampler 使用 Owen-scrambled Sobol 或验收通过的低差异实现。
-- [ ] RQMC uncertainty 不再使用简单 IID variance / N 解释。
-- [ ] SurfaceIdentity 已拆分为 instance / primitive / material / surfaceGroup。
-- [ ] Box 不同 face 能精确分类，Mesh 相邻 triangle 可共享合理的 surfaceGroup。
-- [ ] Denoiser 不再依赖 primitiveId equality hard gate。
-- [ ] Coverage / Visibility 具备 sample count、replicate uncertainty 和 confidence 语义。
-- [ ] 单样本 layer 不再被错误视为 zero-noise high-confidence。
-- [ ] Film Reconstruction Filter 已进入 sample-to-pixel 正式管线。
-- [ ] 至少实现 Box 与 Tent filter，默认使用 Tent。
-- [ ] A-Trous 根据 noise / geometry / coverage confidence 使用连续 filter strength。
-- [ ] CPU 输出 Linear HDR PFM。
-- [ ] CI 区分 deterministic correctness 与 render quality metrics。
-- [ ] CI 生成 Linear HDR MSE / RMSE / MAE / NRMSE，以及 tone-mapped PSNR。
-- [ ] CI 自动生成 16 / 64 / 256 SPP 的 Raw / Diffuse / Specular / Final。
-- [ ] validation 失败或手动运行时可输出 Coverage / Confidence / Variance / SurfaceGroup / Normal / Depth / FilterStrength Debug AOV。
-- [ ] 顶部灯边缘锯齿与随机噪声相较当前版本明显改善。
-- [ ] 短箱和长箱轮廓没有新的 halo / bleeding / surface mixing。
-- [ ] 16 → 64 → 256 SPP 在视觉和 Linear HDR metric 上表现出稳定收敛。
-- [ ] ARCHITECTURE.md 与最终实现同步。
+- [x] samplesPerPass 不再改变样本集合、样本顺序、reduce 顺序和最终输出。
+- [x] SampleGenerator 显式支持 pixel / replicate / sample-within-replicate / dimension。
+- [x] 固定数量的独立 RQMC replicates 可用于 noise estimation。
+- [x] 默认 Camera sampler 使用 Owen-scrambled Sobol 或验收通过的低差异实现。
+- [x] RQMC uncertainty 不再使用简单 IID variance / N 解释。
+- [x] SurfaceIdentity 已拆分为 instance / primitive / material / surfaceGroup。
+- [x] Box 不同 face 能精确分类，Mesh 相邻 triangle 可共享合理的 surfaceGroup。
+- [x] Denoiser 不再依赖 primitiveId equality hard gate。
+- [x] Coverage / Visibility 具备 sample count、replicate uncertainty 和 confidence 语义。
+- [x] 单样本 layer 不再被错误视为 zero-noise high-confidence。
+- [x] Film Reconstruction Filter 已进入 sample-to-pixel 正式管线。
+- [x] 至少实现 Box 与 Tent filter，默认使用 Tent。
+- [x] A-Trous 根据 noise / geometry / coverage confidence 使用连续 filter strength。
+- [x] CPU 输出 Linear HDR PFM。
+- [x] CI 区分 deterministic correctness 与 render quality metrics。
+- [x] CI 生成 Linear HDR MSE / RMSE / MAE / NRMSE，以及 tone-mapped PSNR。
+- [x] CI 自动生成 16 / 64 / 256 SPP 的 Raw / Diffuse / Specular / Final。
+- [x] validation 失败或手动运行时可输出 Coverage / Confidence / Variance / SurfaceGroup / Normal / Depth / FilterStrength Debug AOV。
+- [x] 顶部灯边缘锯齿与随机噪声相较当前版本明显改善。
+- [x] 短箱和长箱轮廓没有新的 halo / bleeding / surface mixing。
+- [x] 16 → 64 → 256 SPP 在视觉和 Linear HDR metric 上表现出稳定收敛。
+- [x] ARCHITECTURE.md 与最终实现同步。
