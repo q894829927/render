@@ -9,7 +9,6 @@ on:
       - "CMakeLists.txt"
       - "scripts/ppm_to_png.py"
       - "scripts/render_metrics.py"
-      - "scripts/render_metrics.py"
       - ".github/workflows/render-preview.yml"
   pull_request:
     branches: [ main ]
@@ -18,6 +17,7 @@ on:
       - "Backend/**"
       - "CMakeLists.txt"
       - "scripts/ppm_to_png.py"
+      - "scripts/render_metrics.py"
       - ".github/workflows/render-preview.yml"
   workflow_dispatch:
 
@@ -46,7 +46,7 @@ jobs:
           for spp in 16 64 256; do
             echo "=== Rendering ${spp} SPP ==="
             mkdir -p "validation/${spp}spp"
-            ./build/render_cpu "${spp}" 8 16 | tee "validation/${spp}spp/render.log"
+            ./build/render_cpu "${spp}" 8 16 owen tent debug | tee "validation/${spp}spp/render.log"
             python3 scripts/ppm_to_png.py \
               --output-dir "validation/${spp}spp" \
               cornell_cpu_raw.ppm \
@@ -58,6 +58,17 @@ jobs:
               cp "cornell_cpu_${signal}.pfm" \
                 "validation/${spp}spp/cornell_cpu_${signal}.pfm"
             done
+
+            mkdir -p "validation/${spp}spp/debug"
+            python3 scripts/ppm_to_png.py \
+              --output-dir "validation/${spp}spp/debug" \
+              cornell_cpu_coverage.ppm \
+              cornell_cpu_coverage_confidence.ppm \
+              cornell_cpu_variance.ppm \
+              cornell_cpu_surface_group.ppm \
+              cornell_cpu_normal.ppm \
+              cornell_cpu_depth.ppm \
+              cornell_cpu_filter_strength.ppm
           done
 
       - name: Compute Linear HDR quality metrics
@@ -109,14 +120,37 @@ jobs:
               test -s "validation/${spp}spp/cornell_cpu_${signal}.png"
               test -s "validation/${spp}spp/cornell_cpu_${signal}.pfm"
             done
+            for aov in coverage coverage_confidence variance surface_group normal depth filter_strength; do
+              test -s "validation/${spp}spp/debug/cornell_cpu_${aov}.png"
+            done
           done
           test -s validation/metrics.json
           find validation -type f \( -name "*.png" -o -name "*.pfm" -o -name "metrics.json" \) -print
 
       - name: Upload render validation
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: render-validation
-          path: validation/
+          path: |
+            validation/metrics.json
+            validation/*spp/render.log
+            validation/*spp/cornell_cpu_raw.png
+            validation/*spp/cornell_cpu_diffuse.png
+            validation/*spp/cornell_cpu_specular.png
+            validation/*spp/cornell_cpu_final.png
+            validation/*spp/cornell_cpu_raw.pfm
+            validation/*spp/cornell_cpu_diffuse.pfm
+            validation/*spp/cornell_cpu_specular.pfm
+            validation/*spp/cornell_cpu_final.pfm
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload debug AOVs on failure or manual run
+        if: failure() || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-debug-aov
+          path: validation/*spp/debug/
+          if-no-files-found: error
+          retention-days: 14

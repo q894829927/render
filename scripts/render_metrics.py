@@ -227,19 +227,20 @@ def validate_convergence(report: dict, spps: Sequence[int]) -> None:
     mid = str(spps[1])
 
     for signal in ("raw", "final"):
-        low_rmse = report["signal_convergence"][low][signal][
-            "full_frame"
-        ]["rmse"]
-        mid_rmse = report["signal_convergence"][mid][signal][
-            "full_frame"
-        ]["rmse"]
+        for roi in ROI_NORMALIZED:
+            low_rmse = report["signal_convergence"][low][signal][
+                roi
+            ]["rmse"]
+            mid_rmse = report["signal_convergence"][mid][signal][
+                roi
+            ]["rmse"]
 
-        if not mid_rmse < low_rmse:
-            raise SystemExit(
-                f"{signal} full-frame RMSE did not improve: "
-                f"{spps[0]} SPP={low_rmse:.8g}, "
-                f"{spps[1]} SPP={mid_rmse:.8g}"
-            )
+            if not mid_rmse < low_rmse:
+                raise SystemExit(
+                    f"{signal} {roi} RMSE did not improve: "
+                    f"{spps[0]} SPP={low_rmse:.8g}, "
+                    f"{spps[1]} SPP={mid_rmse:.8g}"
+                )
 
 
 def validate_denoising_improvement(report: dict, spps: Sequence[int]) -> None:

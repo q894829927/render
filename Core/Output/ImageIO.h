@@ -41,4 +41,46 @@ inline void SavePPM(
     }
 }
 
+inline void SaveUnitPPM(
+    const char* filename,
+    const std::vector<Vec3>& framebuffer,
+    int width,
+    int height)
+{
+    std::ofstream stream(filename);
+    stream
+        << "P3\n"
+        << width << ' ' << height
+        << "\n255\n";
+
+    for (int y = height - 1;
+         y >= 0;
+         --y)
+    {
+        for (int x = 0;
+             x < width;
+             ++x)
+        {
+            const Vec3& value =
+                framebuffer[
+                    static_cast<std::size_t>(y) *
+                    width + x];
+
+            stream
+                << static_cast<int>(
+                    255.999f *
+                    Saturate(value.x))
+                << ' '
+                << static_cast<int>(
+                    255.999f *
+                    Saturate(value.y))
+                << ' '
+                << static_cast<int>(
+                    255.999f *
+                    Saturate(value.z))
+                << '\n';
+        }
+    }
+}
+
 } // namespace render

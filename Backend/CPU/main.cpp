@@ -10,6 +10,7 @@
 
 #include "Core/Denoiser/ATrous.h"
 #include "Core/Integrator/Integrator.h"
+#include "Core/Output/DebugAOV.h"
 #include "Core/Output/ImageIO.h"
 #include "Core/Output/PFM.h"
 #include "Core/Reconstruction/Film.h"
@@ -161,6 +162,26 @@ float MeanValidFilterStrength(
         : 0.0f;
 }
 
+void AccumulateEffectiveStrength(
+    const std::vector<float>& current,
+    std::vector<float>& effective)
+{
+    const std::size_t count =
+        std::min(
+            current.size(),
+            effective.size());
+
+    for (std::size_t i = 0;
+         i < count;
+         ++i)
+    {
+        effective[i] =
+            CombineFilterStrength(
+                effective[i],
+                current[i]);
+    }
+}
+
 std::uint64_t HashLinearBuffer(const std::vector<Vec3>& values) {
     constexpr std::uint64_t kOffset = 1469598103934665603ULL;
     constexpr std::uint64_t kPrime = 1099511628211ULL;
@@ -208,6 +229,19 @@ int main(int argc, char** argv) {
         }
     }
 
+    bool debugAovEnabled = false;
+    if (argc > 6) {
+        if (std::strcmp(argv[6], "debug") == 0)
+            debugAovEnabled = true;
+        else {
+            std::cerr
+                << "Unknown debug mode '"
+                << argv[6]
+                << "'. Use debug or omit the argument.\n";
+            return 2;
+        }
+    }
+
     if (samplerType == SamplerType::OwenSobol &&
         RequiredSampleDimensionCount(maxDepth) > kSobolMaxDimensions)
     {
@@ -239,6 +273,8 @@ int main(int argc, char** argv) {
                     ? "Tent"
                     : "Box")
               << "\nArchitecture: visibility-aware image reconstruction"
+              << "\nDebug AOV: "
+              << (debugAovEnabled ? "enabled" : "disabled")
               << "\nDenoiser: adaptive diffuse/specular A-Trous x"
               << denoise.iterations << "\n\n";
 
@@ -275,6 +311,8 @@ int main(int argc, char** argv) {
     std::vector<Vec3> specularSamplingVariance(signalCount);
     std::vector<float> diffuseStrength(signalCount, 0.0f);
     std::vector<float> specularStrength(signalCount, 0.0f);
+    std::vector<float> diffuseEffectiveStrength(signalCount, 0.0f);
+    std::vector<float> specularEffectiveStrength(signalCount, 0.0f);
 
     InitializeSignals(
         resolved, diffuseA, diffuseVarA, specularA, specularVarA,
@@ -309,6 +347,13 @@ int main(int argc, char** argv) {
             specularSamplingVariance,
             DenoiseSignal::Specular, denoise, step,
             width, height, specularStrength, workers);
+
+        AccumulateEffectiveStrength(
+            diffuseStrength,
+            diffuseEffectiveStrength);
+        AccumulateEffectiveStrength(
+            specularStrength,
+            specularEffectiveStrength);
 
         std::cout
             << "\nAdaptive A-Trous iteration "
@@ -360,6 +405,52 @@ int main(int argc, char** argv) {
     SavePPM("cornell_cpu_specular.ppm", specular, width, height);
     SavePPM("cornell_cpu_final.ppm", finalColor, width, height);
 
+    if (debugAovEnabled) {
+        DebugAOVSet debug =
+            BuildDebugAOVs(
+                resolved,
+                diffuseEffectiveStrength,
+                specularEffectiveStrength,
+                width,
+                height);
+
+        SaveUnitPPM(
+            "cornell_cpu_coverage.ppm",
+            debug.coverage,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_coverage_confidence.ppm",
+            debug.coverageConfidence,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_variance.ppm",
+            debug.variance,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_surface_group.ppm",
+            debug.surfaceGroup,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_normal.ppm",
+            debug.normal,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_depth.ppm",
+            debug.depth,
+            width,
+            height);
+        SaveUnitPPM(
+            "cornell_cpu_filter_strength.ppm",
+            debug.filterStrength,
+            width,
+            height);
+    }
+
     double renderMs = std::chrono::duration<double, std::milli>(
         renderStop - renderStart).count();
     double denoiseMs = std::chrono::duration<double, std::milli>(
@@ -373,6 +464,10 @@ int main(int argc, char** argv) {
               << " specular=" << HashLinearBuffer(specular)
               << " final=" << HashLinearBuffer(finalColor)
               << "\nSaved: raw / diffuse / specular / final"
-              << " (Linear HDR PFM + display PPM)\n";
+              << " (Linear HDR PFM + display PPM)"
+              << (debugAovEnabled
+                    ? " + debug AOVs"
+                    : "")
+              << "\n";
     return 0;
 }

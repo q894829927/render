@@ -43,6 +43,12 @@ add_executable(pfm_test
 target_include_directories(pfm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME pfm_output COMMAND pfm_test)
 
+add_executable(debug_aov_test
+    Tests/DebugAOVTest.cpp
+)
+target_include_directories(debug_aov_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME debug_aov COMMAND debug_aov_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()
