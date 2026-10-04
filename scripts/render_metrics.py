@@ -242,6 +242,38 @@ def validate_convergence(report: dict, spps: Sequence[int]) -> None:
             )
 
 
+def validate_denoising_improvement(report: dict, spps: Sequence[int]) -> None:
+    reference_spp = int(report["reference"]["spp"])
+
+    for spp in spps:
+        if spp >= reference_spp:
+            continue
+
+        key = str(spp)
+        for roi in ROI_NORMALIZED:
+            raw = report["quality_to_raw_reference"][key]["raw"][roi]
+            final = report["quality_to_raw_reference"][key]["final"][roi]
+
+            if not final["rmse"] < raw["rmse"]:
+                raise SystemExit(
+                    f"{spp} SPP {roi}: denoised Final RMSE did not improve "
+                    f"over Raw ({final['rmse']:.8g} >= {raw['rmse']:.8g})"
+                )
+
+            final_psnr = final["tone_mapped_psnr_db"]
+            raw_psnr = raw["tone_mapped_psnr_db"]
+            if (
+                final_psnr is not None
+                and raw_psnr is not None
+                and not final_psnr > raw_psnr
+            ):
+                raise SystemExit(
+                    f"{spp} SPP {roi}: denoised Final tone-mapped PSNR "
+                    f"did not improve over Raw "
+                    f"({final_psnr:.6g} <= {raw_psnr:.6g})"
+                )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -273,6 +305,14 @@ def main() -> None:
         "--check-convergence",
         action="store_true",
         help="Fail if 64 SPP does not improve over 16 SPP",
+    )
+    parser.add_argument(
+        "--check-denoising",
+        action="store_true",
+        help=(
+            "Fail when low-SPP Final is not closer than Raw to the "
+            "Linear HDR raw reference in full-frame and ROI metrics"
+        ),
     )
     args = parser.parse_args()
 
@@ -330,6 +370,9 @@ def main() -> None:
 
     if args.check_convergence:
         validate_convergence(report, spps)
+
+    if args.check_denoising:
+        validate_denoising_improvement(report, spps)
 
     args.output.parent.mkdir(
         parents=True,

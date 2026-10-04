@@ -67,6 +67,7 @@ jobs:
             --spp 16 64 256 \
             --reference-spp 256 \
             --check-convergence \
+            --check-denoising \
             --output validation/metrics.json
           cat validation/metrics.json
 
