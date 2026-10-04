@@ -11,6 +11,7 @@
 #include "Core/Denoiser/ATrous.h"
 #include "Core/Integrator/Integrator.h"
 #include "Core/Output/ImageIO.h"
+#include "Core/Output/PFM.h"
 #include "Core/Reconstruction/Film.h"
 #include "Core/Reconstruction/Reconstruction.h"
 #include "Core/Scene/CornellBox.h"
@@ -343,6 +344,17 @@ int main(int argc, char** argv) {
         }
     });
 
+    const bool pfmSaved =
+        SavePFM("cornell_cpu_raw.pfm", raw, width, height) &&
+        SavePFM("cornell_cpu_diffuse.pfm", diffuse, width, height) &&
+        SavePFM("cornell_cpu_specular.pfm", specular, width, height) &&
+        SavePFM("cornell_cpu_final.pfm", finalColor, width, height);
+
+    if (!pfmSaved) {
+        std::cerr << "\nFailed to save Linear HDR PFM outputs.\n";
+        return 3;
+    }
+
     SavePPM("cornell_cpu_raw.ppm", raw, width, height);
     SavePPM("cornell_cpu_diffuse.ppm", diffuse, width, height);
     SavePPM("cornell_cpu_specular.ppm", specular, width, height);
@@ -360,6 +372,7 @@ int main(int argc, char** argv) {
               << " diffuse=" << HashLinearBuffer(diffuse)
               << " specular=" << HashLinearBuffer(specular)
               << " final=" << HashLinearBuffer(finalColor)
-              << "\nSaved: raw / diffuse / specular / final\n";
+              << "\nSaved: raw / diffuse / specular / final"
+              << " (Linear HDR PFM + display PPM)\n";
     return 0;
 }

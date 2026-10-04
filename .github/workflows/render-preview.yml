@@ -8,6 +8,8 @@ on:
       - "Backend/**"
       - "CMakeLists.txt"
       - "scripts/ppm_to_png.py"
+      - "scripts/render_metrics.py"
+      - "scripts/render_metrics.py"
       - ".github/workflows/render-preview.yml"
   pull_request:
     branches: [ main ]
@@ -51,7 +53,22 @@ jobs:
               cornell_cpu_diffuse.ppm \
               cornell_cpu_specular.ppm \
               cornell_cpu_final.ppm
+
+            for signal in raw diffuse specular final; do
+              cp "cornell_cpu_${signal}.pfm" \
+                "validation/${spp}spp/cornell_cpu_${signal}.pfm"
+            done
           done
+
+      - name: Compute Linear HDR quality metrics
+        run: |
+          python3 scripts/render_metrics.py \
+            --validation-dir validation \
+            --spp 16 64 256 \
+            --reference-spp 256 \
+            --check-convergence \
+            --output validation/metrics.json
+          cat validation/metrics.json
 
       - name: Verify adaptive strength responds to SPP
         run: |
@@ -89,9 +106,11 @@ jobs:
           for spp in 16 64 256; do
             for signal in raw diffuse specular final; do
               test -s "validation/${spp}spp/cornell_cpu_${signal}.png"
+              test -s "validation/${spp}spp/cornell_cpu_${signal}.pfm"
             done
           done
-          find validation -type f -name "*.png" -print
+          test -s validation/metrics.json
+          find validation -type f \( -name "*.png" -o -name "*.pfm" -o -name "metrics.json" \) -print
 
       - name: Upload render validation
         uses: actions/upload-artifact@v4

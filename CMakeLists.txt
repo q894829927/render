@@ -37,6 +37,12 @@ add_executable(adaptive_denoiser_test
 target_include_directories(adaptive_denoiser_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME adaptive_denoiser COMMAND adaptive_denoiser_test)
 
+add_executable(pfm_test
+    Tests/PFMTest.cpp
+)
+target_include_directories(pfm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME pfm_output COMMAND pfm_test)
+
 if(MSVC)
     target_compile_options(render_cpu PRIVATE /O2)
 else()

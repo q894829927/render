@@ -52,6 +52,8 @@ jobs:
             for signal in raw diffuse specular final; do
               cp "cornell_cpu_${signal}.ppm" \
                 "determinism/pass-${pass}_${signal}.ppm"
+              cp "cornell_cpu_${signal}.pfm" \
+                "determinism/pass-${pass}_${signal}.pfm"
             done
           done
 
@@ -64,6 +66,9 @@ jobs:
               cmp \
                 "determinism/pass-1_${signal}.ppm" \
                 "determinism/pass-${pass}_${signal}.ppm"
+              cmp \
+                "determinism/pass-1_${signal}.pfm" \
+                "determinism/pass-${pass}_${signal}.pfm"
             done
           done
           echo "samplesPerPass invariance verified for 1/2/4/8/16."

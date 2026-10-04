@@ -40,6 +40,7 @@ jobs:
         run: |
           for signal in raw diffuse specular final; do
             test -s "cornell_cpu_${signal}.ppm"
+            test -s "cornell_cpu_${signal}.pfm"
           done
           echo "CPU smoke render outputs verified."
 
@@ -52,4 +53,8 @@ jobs:
             cornell_cpu_diffuse.ppm
             cornell_cpu_specular.ppm
             cornell_cpu_final.ppm
+            cornell_cpu_raw.pfm
+            cornell_cpu_diffuse.pfm
+            cornell_cpu_specular.pfm
+            cornell_cpu_final.pfm
           if-no-files-found: error
