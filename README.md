@@ -18,6 +18,7 @@
 - Film Reconstruction Filter：Tent（默认）/ Box（reference）
 - 同采样域 Primary Guide
 - RQMC sampling-variance 驱动的 Adaptive A-Trous Denoiser
+- Linear HDR PFM 输出与 ROI Quantitative Regression
 - Cornell Box
 - CPU 多线程后端
 - CUDA 后端
@@ -93,3 +94,26 @@ cornell_cuda_final.ppm
 在 Camber GPU 会话中运行 `bash scripts/camber_interactive_gpu.sh 256 8 16`
 会构建 CUDA 后端、实际使用 GPU 渲染，并把这四张图转换为 PNG 上传到个人 Stash。
 GitHub Actions 的 `CUDA Compile Test` 只验证 CUDA 编译；普通托管 runner 不执行 GPU 渲染。
+
+
+## Linear HDR Validation
+
+CPU renderer 同时输出 display PPM 和未 tone-map 的 Linear HDR PFM：
+
+```text
+cornell_cpu_raw.pfm
+cornell_cpu_diffuse.pfm
+cornell_cpu_specular.pfm
+cornell_cpu_final.pfm
+```
+
+普通 GitHub Render Validation 会对 16 / 64 / 256 SPP 生成 PFM + PNG，并由 `scripts/render_metrics.py` 计算：
+
+```text
+MSE / RMSE / MAE / MaxAbs / NRMSE
+Tone-mapped PSNR
+```
+
+指标覆盖 full frame、Ceiling Light Border、Short Box Silhouette、Tall Box Silhouette。
+
+普通 push 的 256 SPP Raw 只作为同次运行的 provisional convergence reference。需要更高质量 reference 时，手动运行 `High Quality Reference` workflow，选择 1024 或 2048 SPP。
