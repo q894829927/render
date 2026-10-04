@@ -40,12 +40,13 @@ cmake --build build --config Release
 
 前三个参数依次是：`SPP`、`Samples Per Pass`、`Max Depth`。
 
-第四个可选参数选择采样器，第五个可选参数选择 Film Reconstruction Filter：
+第四个可选参数选择采样器，第五个可选参数选择 Film Reconstruction Filter；第六个可选参数 `debug` 输出 Debug AOV：
 
 ```bash
 ./build/render_cpu 256 8 16 owen tent   # 默认
 ./build/render_cpu 256 8 16 owen box    # Box reconstruction reference
 ./build/render_cpu 256 8 16 hash tent   # deterministic sampler reference
+./build/render_cpu 256 8 16 owen tent debug
 ```
 
 Tent 使用归一化三角核，并直接在 Camera sample 阶段 importance-sample reconstruction kernel；不是对最终 PNG 做 blur。
@@ -117,3 +118,44 @@ Tone-mapped PSNR
 指标覆盖 full frame、Ceiling Light Border、Short Box Silhouette、Tall Box Silhouette。
 
 普通 push 的 256 SPP Raw 只作为同次运行的 provisional convergence reference。需要更高质量 reference 时，手动运行 `High Quality Reference` workflow，选择 1024 或 2048 SPP。
+
+
+## Debug AOV
+
+CPU debug 模式：
+
+```bash
+./build/render_cpu 256 8 16 owen tent debug
+```
+
+额外生成：
+
+```text
+cornell_cpu_coverage.ppm
+cornell_cpu_coverage_confidence.ppm
+cornell_cpu_variance.ppm
+cornell_cpu_surface_group.ppm
+cornell_cpu_normal.ppm
+cornell_cpu_depth.ppm
+cornell_cpu_filter_strength.ppm
+```
+
+`filter_strength` 是四轮 Adaptive A-Trous 的累计有效强度，而不是最后一轮瞬时值。
+
+GitHub Render Validation 会在 runner 中验证这些 AOV。普通成功 push 只上传核心 PFM/PNG/metrics；失败或手动 workflow_dispatch 时上传完整 Debug AOV artifact。
+
+## Phase E Status
+
+Sampling → SurfaceIdentity → Visibility Reconstruction → Tent Film Filter → Adaptive A-Trous → Linear HDR Regression → Debug AOV 的 Phase E 已完成。
+
+自动验收包括：
+
+```text
+CPU Smoke
+Sample Determinism
+16 / 64 / 256 SPP Render Validation
+Full-frame + ROI HDR Regression
+CUDA Compile Test
+```
+
+下一阶段可以开始 Triangle / Mesh / OBJ / BVH。
