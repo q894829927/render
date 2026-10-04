@@ -676,6 +676,97 @@ struct AdaptiveFilterDecision {
 
 # E6 — Linear HDR / PFM + Quantitative Regression
 
+## E6 实施状态
+
+状态：**已完成并通过 CI 验收**。
+
+实现提交：
+
+- `23142c5c060cd24ddd1806fc4741002c407737cc`：PFM 输出、HDR metrics、ROI regression、高质量 reference workflow 主实现。
+- `701c0db0d794049e995b8330d6e6c18dd18df7db`：把低 SPP denoising improvement 正式加入 HDR CI gate。
+
+已完成：
+
+- 新增 `Core/Output/PFM.h`。
+- CPU 正式输出四路 Linear HDR float32 PFM：
+  - `cornell_cpu_raw.pfm`
+  - `cornell_cpu_diffuse.pfm`
+  - `cornell_cpu_specular.pfm`
+  - `cornell_cpu_final.pfm`
+- PFM 为 RGB float32、Linear HDR，不经过 ACES、gamma 或 8-bit quantization。
+- PFM endian/row layout 使用显式二进制写入，不依赖宿主机字节序。
+- 新增 `PFMTest`，验证 Header、little-endian scale 和 float payload 不发生数值变换。
+- 新增 `scripts/render_metrics.py`，无第三方 Python 依赖，直接读取 PFM。
+- Linear HDR 指标：
+  - MSE
+  - RMSE
+  - MAE
+  - Max Absolute Error
+  - NRMSE = RMSE / RMS(reference)
+- Display-space 指标：
+  - 与 renderer 相同 ACES + gamma 后的 PSNR。
+- ROI：
+  - full frame
+  - ceiling light border
+  - short-box silhouette
+  - tall-box silhouette
+- 普通 push 使用同次 256 SPP Raw 作为 **provisional convergence reference**，避免把 256 SPP 描述成最终 ground truth。
+- 新增手动 `High Quality Reference` workflow，可选择 1024 / 2048 SPP，生成独立 Linear HDR PFM + PNG artifact；不会在普通 push 自动消耗 CPU 时间。
+- `Sample Determinism` 现在同时 exact-compare PPM、PFM 和 Linear framebuffer hash，Correctness Regression 与 Render Quality Regression 保持分离。
+- Render Validation 自动上传：
+  - 16 / 64 / 256 SPP × Raw / Diffuse / Specular / Final PNG
+  - 同矩阵 PFM
+  - per-SPP render.log
+  - metrics.json
+- CI 自动检查：
+  - 64 SPP Raw / Final full-frame RMSE 必须优于 16 SPP。
+  - 16 / 64 SPP 的 Final 在 full-frame + 三个关键 ROI 中，Linear HDR RMSE 必须优于同 SPP Raw。
+  - 同时要求 tone-mapped PSNR 不退化。
+
+本次普通 validation 的 full-frame 结果（对同次 256 SPP Raw reference）：
+
+~~~text
+16 SPP
+  Raw   RMSE  0.035680
+        NRMSE 0.026565
+        PSNR  26.94 dB
+
+  Final RMSE  0.029983
+        NRMSE 0.022324
+        PSNR  36.66 dB
+
+64 SPP
+  Raw   RMSE  0.011591
+        NRMSE 0.008630
+        PSNR  34.06 dB
+
+  Final RMSE  0.009226
+        NRMSE 0.006869
+        PSNR  38.87 dB
+~~~
+
+关键 ROI 也通过 Final < Raw 的 Linear HDR RMSE gate：
+
+~~~text
+Ceiling Light Border
+16 SPP: Raw 0.16357 → Final 0.16038
+64 SPP: Raw 0.04413 → Final 0.04276
+
+Short Box Silhouette
+16 SPP: Raw 0.01481 → Final 0.00551
+64 SPP: Raw 0.00657 → Final 0.00401
+
+Tall Box Silhouette
+16 SPP: Raw 0.01953 → Final 0.00590
+64 SPP: Raw 0.00880 → Final 0.00497
+~~~
+
+说明：
+
+- 当前 256 SPP Raw 只是普通 CI 的临时 reference，用于自动检查收敛方向和明显退化。
+- 真正用于参数定标的高质量 reference 应运行手动 1024 / 2048 SPP workflow。
+- E7 将在此基础上加入 Debug AOV、最终视觉矩阵和完整 Phase E 验收。
+
 ## 目标
 
 PNG 只作为视觉预览，Linear HDR 作为数值验证基础。
